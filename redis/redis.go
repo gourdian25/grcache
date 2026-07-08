@@ -45,6 +45,10 @@ type RedisConfig struct {
 	DialTimeout  time.Duration
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+
+	// Logger receives optional diagnostic messages (connection failures,
+	// shutdown). A nil Logger disables logging entirely.
+	Logger grcache.Logger
 }
 
 func (cfg RedisConfig) withDefaults() RedisConfig {
@@ -66,6 +70,7 @@ func (cfg RedisConfig) withDefaults() RedisConfig {
 // Cache is a Redis-backed implementation of grcache.Cache.
 type Cache struct {
 	client *goredis.Client
+	logger grcache.Logger
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -85,6 +90,7 @@ func NewRedisCache(cfg RedisConfig) (grcache.Cache, error) {
 		return nil, fmt.Errorf("grcache/redis: RedisConfig.Addr is required")
 	}
 	cfg = cfg.withDefaults()
+	logger := grcache.OrNop(cfg.Logger)
 
 	client := goredis.NewClient(&goredis.Options{
 		Addr:         cfg.Addr,
@@ -100,10 +106,12 @@ func NewRedisCache(cfg RedisConfig) (grcache.Cache, error) {
 	defer cancel()
 	if _, err := client.Ping(ctx).Result(); err != nil {
 		_ = client.Close()
+		logger.Errorf("grcache/redis: connect %s failed: %v", cfg.Addr, err)
 		return nil, fmt.Errorf("grcache/redis: connect %s: %w", cfg.Addr, grcache.ErrCacheUnavailable)
 	}
 
-	return &Cache{client: client}, nil
+	logger.Infof("grcache/redis: connected to %s (db %d)", cfg.Addr, cfg.DB)
+	return &Cache{client: client, logger: logger}, nil
 }
 
 func valueKey(key string) string { return valuePrefix + key }
@@ -214,6 +222,7 @@ func (c *Cache) Close() error {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
 		err = c.client.Close()
+		c.logger.Infof("grcache/redis: cache closed")
 	})
 	return err
 }

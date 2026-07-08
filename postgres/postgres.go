@@ -65,6 +65,11 @@ type PostgresConfig struct {
 	MaxIdleConns    int
 	ConnMaxLifetime time.Duration
 	SweepInterval   time.Duration
+
+	// Logger receives optional diagnostic messages (connection failures,
+	// sweep-cycle summaries, shutdown). A nil Logger disables logging
+	// entirely.
+	Logger grcache.Logger
 }
 
 func (cfg PostgresConfig) withDefaults() PostgresConfig {
@@ -76,7 +81,8 @@ func (cfg PostgresConfig) withDefaults() PostgresConfig {
 
 // Cache is a PostgreSQL-backed implementation of grcache.Cache, using GORM.
 type Cache struct {
-	db *gorm.DB
+	db     *gorm.DB
+	logger grcache.Logger
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -97,12 +103,14 @@ func NewPostgresCache(cfg PostgresConfig) (grcache.Cache, error) {
 		return nil, fmt.Errorf("grcache/postgres: PostgresConfig.DSN is required")
 	}
 	cfg = cfg.withDefaults()
+	appLogger := grcache.OrNop(cfg.Logger)
 
 	// Get(missing key) is expected control flow for a cache, not a real
 	// error, so record-not-found lookups should not be logged as failures.
 	gormLogger := logger.Default.LogMode(logger.Silent)
 	db, err := gorm.Open(postgres.Open(cfg.DSN), &gorm.Config{Logger: gormLogger})
 	if err != nil {
+		appLogger.Errorf("grcache/postgres: open failed: %v", err)
 		return nil, fmt.Errorf("grcache/postgres: open: %w", grcache.ErrCacheUnavailable)
 	}
 
@@ -124,6 +132,7 @@ func NewPostgresCache(cfg PostgresConfig) (grcache.Cache, error) {
 	defer cancel()
 	if err := sqlDB.PingContext(pingCtx); err != nil {
 		_ = sqlDB.Close()
+		appLogger.Errorf("grcache/postgres: ping failed: %v", err)
 		return nil, fmt.Errorf("grcache/postgres: ping: %w", grcache.ErrCacheUnavailable)
 	}
 
@@ -132,8 +141,11 @@ func NewPostgresCache(cfg PostgresConfig) (grcache.Cache, error) {
 		return nil, fmt.Errorf("grcache/postgres: automigrate: %w", err)
 	}
 
+	appLogger.Infof("grcache/postgres: connected (sweep interval %s)", cfg.SweepInterval)
+
 	c := &Cache{
 		db:        db,
+		logger:    appLogger,
 		closeChan: make(chan struct{}),
 	}
 	c.wg.Add(1)
@@ -177,10 +189,14 @@ func (c *Cache) sweep() {
 		return tx.Where("key IN ?", expiredKeys).Delete(&cacheEntryTag{}).Error
 	})
 	if err != nil {
+		c.logger.Errorf("grcache/postgres: sweep failed: %v", err)
 		return
 	}
 
-	c.evictions.Add(uint64(len(expiredKeys)))
+	if len(expiredKeys) > 0 {
+		c.evictions.Add(uint64(len(expiredKeys)))
+		c.logger.Infof("grcache/postgres: sweep reclaimed %d expired entries", len(expiredKeys))
+	}
 }
 
 func (c *Cache) Get(ctx context.Context, key string) ([]byte, error) {
@@ -339,6 +355,7 @@ func (c *Cache) Close() error {
 			return
 		}
 		err = sqlDB.Close()
+		c.logger.Infof("grcache/postgres: cache closed")
 	})
 	return err
 }

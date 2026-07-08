@@ -59,6 +59,10 @@ type MongoConfig struct {
 	URI        string // required
 	Database   string // required
 	Collection string // default "grcache_entries"
+
+	// Logger receives optional diagnostic messages (connection failures,
+	// shutdown). A nil Logger disables logging entirely.
+	Logger grcache.Logger
 }
 
 func (cfg MongoConfig) withDefaults() MongoConfig {
@@ -72,6 +76,7 @@ func (cfg MongoConfig) withDefaults() MongoConfig {
 type Cache struct {
 	client     *mongo.Client
 	collection *mongo.Collection
+	logger     grcache.Logger
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -93,17 +98,20 @@ func NewMongoCache(cfg MongoConfig) (grcache.Cache, error) {
 		return nil, fmt.Errorf("grcache/mongo: MongoConfig.Database is required")
 	}
 	cfg = cfg.withDefaults()
+	logger := grcache.OrNop(cfg.Logger)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(cfg.URI))
 	if err != nil {
+		logger.Errorf("grcache/mongo: connect failed: %v", err)
 		return nil, fmt.Errorf("grcache/mongo: connect: %w", grcache.ErrCacheUnavailable)
 	}
 
 	if err := client.Ping(ctx, readpref.Primary()); err != nil {
 		_ = client.Disconnect(ctx)
+		logger.Errorf("grcache/mongo: ping failed: %v", err)
 		return nil, fmt.Errorf("grcache/mongo: ping: %w", grcache.ErrCacheUnavailable)
 	}
 
@@ -114,7 +122,8 @@ func NewMongoCache(cfg MongoConfig) (grcache.Cache, error) {
 		return nil, fmt.Errorf("grcache/mongo: ensure indexes: %w", err)
 	}
 
-	return &Cache{client: client, collection: collection}, nil
+	logger.Infof("grcache/mongo: connected to database %q collection %q", cfg.Database, cfg.Collection)
+	return &Cache{client: client, collection: collection, logger: logger}, nil
 }
 
 func ensureIndexes(ctx context.Context, collection *mongo.Collection) error {
@@ -252,6 +261,7 @@ func (c *Cache) Close() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		err = c.client.Disconnect(ctx)
+		c.logger.Infof("grcache/mongo: cache closed")
 	})
 	return err
 }

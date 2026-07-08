@@ -59,6 +59,6 @@ type Stats struct {
 	Hits       uint64
 	Misses     uint64
 	Evictions  uint64
-	KeyCount   int64         // -1 if backend cannot report this cheaply (e.g. Redis without SCAN)
+	KeyCount   int64 // -1 if backend cannot report this cheaply (e.g. Redis without SCAN)
 	AvgLatency time.Duration
 }

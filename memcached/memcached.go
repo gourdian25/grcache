@@ -43,11 +43,16 @@ type MemcachedConfig struct {
 	Servers      []string // required, e.g. []string{"localhost:11211"}
 	Timeout      time.Duration
 	MaxIdleConns int
+
+	// Logger receives optional diagnostic messages (connection failures,
+	// shutdown). A nil Logger disables logging entirely.
+	Logger grcache.Logger
 }
 
 // Cache is a memcached-backed implementation of grcache.Cache.
 type Cache struct {
 	client *memcache.Client
+	logger grcache.Logger
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -65,6 +70,7 @@ func NewMemcachedCache(cfg MemcachedConfig) (grcache.Cache, error) {
 	if len(cfg.Servers) == 0 {
 		return nil, fmt.Errorf("grcache/memcached: MemcachedConfig.Servers is required")
 	}
+	logger := grcache.OrNop(cfg.Logger)
 
 	client := memcache.New(cfg.Servers...)
 	if cfg.Timeout > 0 {
@@ -75,10 +81,12 @@ func NewMemcachedCache(cfg MemcachedConfig) (grcache.Cache, error) {
 	}
 
 	if err := client.Ping(); err != nil {
+		logger.Errorf("grcache/memcached: connect %v failed: %v", cfg.Servers, err)
 		return nil, fmt.Errorf("grcache/memcached: connect %v: %w", cfg.Servers, grcache.ErrCacheUnavailable)
 	}
 
-	return &Cache{client: client}, nil
+	logger.Infof("grcache/memcached: connected to %v", cfg.Servers)
+	return &Cache{client: client, logger: logger}, nil
 }
 
 func tagListKey(tag string) string { return tagKeyPrefix + tag }
@@ -251,6 +259,7 @@ func (c *Cache) Close() error {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
 		err = c.client.Close()
+		c.logger.Infof("grcache/memcached: cache closed")
 	})
 	return err
 }

@@ -91,6 +91,101 @@ func TestNewPostgresCache_BadDSN(t *testing.T) {
 	}
 }
 
+func TestSweepReclaimsExpiredEntries(t *testing.T) {
+	ctx := context.Background()
+	truncateTestDB(t)
+	cache, err := grcachepg.NewPostgresCache(grcachepg.PostgresConfig{
+		DSN:           testDSN,
+		SweepInterval: 30 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewPostgresCache: %v", err)
+	}
+	defer cache.Close()
+	defer truncateTestDB(t)
+
+	if err := cache.Set(ctx, "sweep-me", []byte("v"), 10*time.Millisecond, "sweep-tag"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		stats, err := cache.Stats(ctx)
+		if err != nil {
+			t.Fatalf("Stats: %v", err)
+		}
+		if stats.KeyCount == 0 {
+			return
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+
+	t.Fatal("sweep did not reclaim expired entry within deadline")
+}
+
+func TestPostCloseAllMethods(t *testing.T) {
+	ctx := context.Background()
+	cache := newCacheForTest(t)
+
+	if err := cache.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if err := cache.Delete(ctx, "anything"); !isClosed(err) {
+		t.Fatalf("Delete after Close error = %v, want ErrClosed", err)
+	}
+	if _, err := cache.Exists(ctx, "anything"); !isClosed(err) {
+		t.Fatalf("Exists after Close error = %v, want ErrClosed", err)
+	}
+	if _, err := cache.InvalidateTag(ctx, "anything"); !isClosed(err) {
+		t.Fatalf("InvalidateTag after Close error = %v, want ErrClosed", err)
+	}
+	if _, err := cache.Stats(ctx); !isClosed(err) {
+		t.Fatalf("Stats after Close error = %v, want ErrClosed", err)
+	}
+}
+
+func isClosed(err error) bool {
+	return err == grcache.ErrClosed
+}
+
+func TestConnectionPoolOptions(t *testing.T) {
+	truncateTestDB(t)
+	cache, err := grcachepg.NewPostgresCache(grcachepg.PostgresConfig{
+		DSN:             testDSN,
+		MaxOpenConns:    5,
+		MaxIdleConns:    2,
+		ConnMaxLifetime: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NewPostgresCache with pool options: %v", err)
+	}
+	defer cache.Close()
+	defer truncateTestDB(t)
+}
+
+func TestWithLogger(t *testing.T) {
+	logger := &conformance.RecordingLogger{}
+	truncateTestDB(t)
+	cache, err := grcachepg.NewPostgresCache(grcachepg.PostgresConfig{
+		DSN:           testDSN,
+		SweepInterval: 20 * time.Millisecond,
+		Logger:        logger,
+	})
+	if err != nil {
+		t.Fatalf("NewPostgresCache: %v", err)
+	}
+	defer truncateTestDB(t)
+
+	if err := cache.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if logger.Total() == 0 {
+		t.Fatal("WithLogger: no messages were logged, want at least one (connect and/or close)")
+	}
+}
+
 func TestTransactionRollbackOnPartialFailure(t *testing.T) {
 	ctx := context.Background()
 	cache := newCacheForTest(t)

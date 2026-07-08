@@ -77,6 +77,49 @@ func TestNewMemcachedCache_Unreachable(t *testing.T) {
 // emulation can lose a member under a race — see the package doc comment.
 // This test asserts the emulation doesn't corrupt/crash, not that every
 // concurrent member survives.
+func TestWithLogger(t *testing.T) {
+	logger := &conformance.RecordingLogger{}
+	flushTestServer(t)
+	cache, err := memcached.NewMemcachedCache(memcached.MemcachedConfig{
+		Servers: []string{testAddr},
+		Logger:  logger,
+	})
+	if err != nil {
+		t.Fatalf("NewMemcachedCache: %v", err)
+	}
+	defer flushTestServer(t)
+
+	if err := cache.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if logger.Total() == 0 {
+		t.Fatal("WithLogger: no messages were logged, want at least one (connect and/or close)")
+	}
+}
+
+func TestPostCloseAllMethods(t *testing.T) {
+	ctx := context.Background()
+	cache := newCacheForTest(t)
+
+	if err := cache.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if err := cache.Delete(ctx, "anything"); err != grcache.ErrClosed {
+		t.Fatalf("Delete after Close error = %v, want ErrClosed", err)
+	}
+	if _, err := cache.Exists(ctx, "anything"); err != grcache.ErrClosed {
+		t.Fatalf("Exists after Close error = %v, want ErrClosed", err)
+	}
+	if _, err := cache.InvalidateTag(ctx, "anything"); err != grcache.ErrClosed {
+		t.Fatalf("InvalidateTag after Close error = %v, want ErrClosed", err)
+	}
+	if _, err := cache.Stats(ctx); err != grcache.ErrClosed {
+		t.Fatalf("Stats after Close error = %v, want ErrClosed", err)
+	}
+}
+
 func TestTagListRaceIsDocumentedNotFixed(t *testing.T) {
 	ctx := context.Background()
 	cache := newCacheForTest(t)

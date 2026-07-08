@@ -102,6 +102,29 @@ func TestInvalidateTag_PipelinedAtScale(t *testing.T) {
 	}
 }
 
+func TestWithLogger(t *testing.T) {
+	logger := &conformance.RecordingLogger{}
+	flushTestDB(t)
+	cache, err := redis.NewRedisCache(redis.RedisConfig{
+		Addr:     testAddr,
+		Password: testPassword,
+		DB:       testDB,
+		Logger:   logger,
+	})
+	if err != nil {
+		t.Fatalf("NewRedisCache: %v", err)
+	}
+	defer flushTestDB(t)
+
+	if err := cache.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if logger.Total() == 0 {
+		t.Fatal("WithLogger: no messages were logged, want at least one (connect and/or close)")
+	}
+}
+
 func TestKeyPrefixCollisionSafety(t *testing.T) {
 	ctx := context.Background()
 	cache := newCacheForTest(t)

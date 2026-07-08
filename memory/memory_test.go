@@ -62,6 +62,32 @@ func TestSweepReclaimsExpiredEntries(t *testing.T) {
 	t.Fatal("sweep did not reclaim expired entry within deadline")
 }
 
+func TestWithLogger(t *testing.T) {
+	logger := &conformance.RecordingLogger{}
+	cache, err := memory.NewMemoryCache(memory.WithSweepInterval(20*time.Millisecond), memory.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("NewMemoryCache: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := cache.Set(ctx, "logged-key", []byte("v"), 10*time.Millisecond); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && logger.Total() == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if err := cache.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if logger.Total() == 0 {
+		t.Fatal("WithLogger: no messages were logged, want at least one (sweep and/or close)")
+	}
+}
+
 func TestConcurrentCloseIsSafe(t *testing.T) {
 	cache, err := memory.NewMemoryCache()
 	if err != nil {

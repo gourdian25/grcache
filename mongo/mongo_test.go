@@ -108,6 +108,28 @@ func TestNewMongoCache_BadURI(t *testing.T) {
 // expiry (per our own clock check) and Mongo's TTL background monitor
 // physically reaping the document — Get/Exists must treat it as gone based
 // on the lazy expiry check alone, without waiting for the TTL monitor.
+func TestWithLogger(t *testing.T) {
+	logger := &conformance.RecordingLogger{}
+	dropTestDB(t)
+	cache, err := grcachemongo.NewMongoCache(grcachemongo.MongoConfig{
+		URI:      testURI,
+		Database: testDatabase,
+		Logger:   logger,
+	})
+	if err != nil {
+		t.Fatalf("NewMongoCache: %v", err)
+	}
+	defer dropTestDB(t)
+
+	if err := cache.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if logger.Total() == 0 {
+		t.Fatal("WithLogger: no messages were logged, want at least one (connect and/or close)")
+	}
+}
+
 func TestExistsDuringTTLWindow(t *testing.T) {
 	ctx := context.Background()
 	cache := newCacheForTest(t)

@@ -44,6 +44,15 @@ func WithSweepInterval(d time.Duration) Option {
 	}
 }
 
+// WithLogger installs an optional grcache.Logger for diagnostic messages
+// (sweep-cycle summaries, shutdown). Logging is always opt-in; without this
+// option the cache logs nothing.
+func WithLogger(l grcache.Logger) Option {
+	return func(c *Cache) {
+		c.logger = grcache.OrNop(l)
+	}
+}
+
 // Cache is an in-memory implementation of grcache.Cache.
 type Cache struct {
 	mu   sync.RWMutex
@@ -51,6 +60,7 @@ type Cache struct {
 	tags map[string]map[string]struct{} // tag -> set of keys
 
 	sweepInterval time.Duration
+	logger        grcache.Logger
 	closed        atomic.Bool
 	closeChan     chan struct{}
 	wg            sync.WaitGroup
@@ -68,11 +78,14 @@ func NewMemoryCache(opts ...Option) (grcache.Cache, error) {
 		data:          make(map[string]entry),
 		tags:          make(map[string]map[string]struct{}),
 		sweepInterval: defaultSweepInterval,
+		logger:        grcache.NopLogger(),
 		closeChan:     make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
+
+	c.logger.Infof("grcache/memory: cache started (sweep interval %s)", c.sweepInterval)
 
 	c.wg.Add(1)
 	go c.sweepLoop()
@@ -100,13 +113,18 @@ func (c *Cache) sweep() {
 	now := time.Now()
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	swept := 0
 	for key, e := range c.data {
 		if e.expired(now) {
 			c.removeLocked(key, e)
 			c.evictions.Add(1)
+			swept++
 		}
+	}
+	c.mu.Unlock()
+
+	if swept > 0 {
+		c.logger.Infof("grcache/memory: sweep reclaimed %d expired entries", swept)
 	}
 }
 
@@ -275,5 +293,6 @@ func (c *Cache) Close() error {
 	}
 	close(c.closeChan)
 	c.wg.Wait()
+	c.logger.Infof("grcache/memory: cache closed")
 	return nil
 }
