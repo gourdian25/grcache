@@ -1,6 +1,6 @@
 # File: Makefile
 
-.PHONY: help build test race coverage coverage-summary bench lint vet fmt staticcheck clean deps
+.PHONY: help build test race coverage coverage-summary coverage-check bench lint vet fmt staticcheck clean deps
 
 GO := go
 MODULE := github.com/gourdian25/grcache
@@ -13,6 +13,7 @@ help:
 	@echo "  make race             Run tests with race detector"
 	@echo "  make coverage         Generate HTML coverage report"
 	@echo "  make coverage-summary Show coverage summary by function"
+	@echo "  make coverage-check   Check each package meets the $(COVERAGE_MIN)% threshold"
 	@echo "  make bench            Run benchmarks"
 	@echo "  make lint             Run linters (requires golangci-lint)"
 	@echo "  make vet              Run go vet"
@@ -40,6 +41,26 @@ coverage-summary:
 	@echo "Coverage summary by function:"
 	@$(GO) test -coverprofile=coverage.out ./...
 	@$(GO) tool cover -func=coverage.out
+
+# Requires local Redis/Postgres/Mongo/memcached (see README) — every
+# non-test-helper package must independently meet COVERAGE_MIN, matching
+# gourdiantoken's own coverage-check convention. The conformance package is
+# test-only infrastructure (no _test.go files of its own) and is skipped.
+coverage-check:
+	@echo "Checking each package meets $(COVERAGE_MIN)% coverage..."
+	@fail=0; \
+	for pkg in . ./memory ./redis ./memcached ./postgres ./mongo; do \
+		out=$$($(GO) test -cover $$pkg 2>&1); \
+		pct=$$(echo "$$out" | grep -o '[0-9.]*%' | tr -d '%'); \
+		if [ -z "$$pct" ]; then echo "✗ $$pkg: no coverage output"; fail=1; continue; fi; \
+		below=$$(awk -v p="$$pct" -v m="$(COVERAGE_MIN)" 'BEGIN { print (p < m) ? 1 : 0 }'); \
+		if [ "$$below" = "1" ]; then \
+			echo "✗ $$pkg: $$pct% is below $(COVERAGE_MIN)% threshold"; fail=1; \
+		else \
+			echo "✓ $$pkg: $$pct%"; \
+		fi; \
+	done; \
+	exit $$fail
 
 bench:
 	@echo "Running benchmarks..."

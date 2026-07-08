@@ -47,6 +47,35 @@ cache.InvalidateTag(ctx, "tenant:acme")
 Each backend has its own constructor and `Config` struct — see the package
 doc comment in `memory/`, `redis/`, `memcached/`, `postgres/`, `mongo/`.
 
+## Optional logging
+
+Every backend accepts an optional `Logger` (a `Config.Logger` field, or
+`memory.WithLogger(...)` for the in-memory backend) for diagnostic messages
+— connection failures, sweep-cycle summaries, shutdown. Logging is entirely
+opt-in: a nil Logger (the default) means grcache logs nothing, and grcache
+itself does not depend on any logging library.
+
+`grcache.Logger` is a tiny structural interface (`Infof`/`Warnf`/`Errorf`),
+satisfied directly by [grlog](https://github.com/gourdian25/grlog)'s
+`*grlog.Logger` — the ecosystem's own recommended choice — with no adapter
+needed:
+
+```go
+import (
+    "github.com/gourdian25/grlog"
+    "github.com/gourdian25/grcache/redis"
+)
+
+logger := grlog.NewDefaultLogger()
+
+cache, err := redis.NewRedisCache(redis.RedisConfig{
+    Addr:   "localhost:6379",
+    Logger: logger,
+})
+```
+
+Any logger exposing the same three methods works — grlog is not required.
+
 ## Testing
 
 grcache's tests run against real local services (no mocks, no
@@ -62,6 +91,29 @@ The Redis DB index, Postgres database name, and Mongo database name are
 deliberately different from gourdiantoken's own test settings (DB 15,
 `postgres_db`, and its own Mongo database) to avoid collisions if both
 suites ever run against the same local instances simultaneously.
+
+Every package independently maintains at least 80% test coverage, matching
+gourdiantoken's own `COVERAGE_MIN` convention — run `make coverage-check` to
+verify (requires all four services above running locally).
+
+## Dependencies
+
+Unlike gourdiantoken and grlog, which pin dependency versions to match each
+other for ecosystem consistency, grcache tracks the latest available
+version of each dependency it actually uses:
+
+| Dependency | Used by |
+|---|---|
+| `github.com/redis/go-redis/v9` | `grcache/redis` |
+| `github.com/bradfitz/gomemcache` | `grcache/memcached` |
+| `gorm.io/gorm`, `gorm.io/driver/postgres` | `grcache/postgres` |
+| `go.mongodb.org/mongo-driver` | `grcache/mongo` |
+| `github.com/gourdian25/grlog` | test-only, proving `*grlog.Logger` satisfies `grcache.Logger` |
+
+The root `grcache` package and `grcache/memory` remain stdlib-only —
+`grlog` is a dependency of this module's own test suite, not of any
+backend's production code, so it never leaks into a consumer that only
+imports `grcache/memory`.
 
 ## Roadmap
 

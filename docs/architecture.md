@@ -2,7 +2,7 @@
 
 ## Divergences from sibling conventions
 
-grcache deliberately diverges from `gourdiantoken` and `grlog` in three
+grcache deliberately diverges from `gourdiantoken` and `grlog` in four
 places. These are considered, not accidental — documented here so a future
 contributor doesn't "fix" them back into alignment.
 
@@ -49,6 +49,30 @@ DB indices/database names (Redis DB 14 vs. gourdiantoken's DB 15,
 Postgres database `grcache_test` vs. `postgres_db`, a dedicated Mongo
 database rather than gourdiantoken's) so both suites can run against the
 same local service instances without colliding.
+
+### 4. Latest dependency versions, not version-matched to gourdiantoken
+
+The original plan pinned grcache's Redis/GORM/Mongo dependencies to the
+exact versions gourdiantoken uses, for cross-repo consistency. This was
+superseded: grcache now tracks the latest available version of each
+dependency it actually uses (see the README's Dependencies table), rather
+than matching gourdiantoken's pinned versions. `go.mongodb.org/mongo-driver`
+is a partial exception — grcache stays on the v1 module (latest v1.x patch)
+rather than migrating to the `/v2` module path, since that would be a
+breaking API rewrite out of scope for a routine dependency bump.
+
+## Logging
+
+Every backend accepts an optional `grcache.Logger` (see `logger.go`) for
+diagnostic messages — connection failures, sweep-cycle summaries, shutdown.
+The interface is deliberately minimal (`Infof`/`Warnf`/`Errorf`) and defined
+in the root package using only stdlib types, so no backend's production
+code needs to import a logging library to accept one structurally. `grlog`
+is used only in this module's own test suite (`logger_test.go` and each
+backend's `TestWithLogger`) to prove a real `*grlog.Logger` satisfies the
+interface — it is never a dependency of any backend's non-test code, so it
+does not leak into consumers who only import `grcache/memory` (or any other
+backend) and don't want a logging dependency at all.
 
 ## Backend-specific design notes
 
