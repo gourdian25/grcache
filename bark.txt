@@ -1,0 +1,22 @@
+.
+├── Makefile
+├── README.md
+├── cache.go
+├── conformance/
+│   └── conformance.go
+├── docs/
+│   ├── architecture.md
+│   └── plan/
+│       └── grcache-plan.md
+├── errors.go
+├── errors_test.go
+├── go.mod
+├── go.sum
+├── memory/
+│   ├── memory.go
+│   └── memory_test.go
+└── redis/
+    ├── redis.go
+    └── redis_test.go
+
+5 directories, 14 files
