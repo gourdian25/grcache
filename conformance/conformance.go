@@ -1,10 +1,12 @@
 // File: conformance/conformance.go
 
 // Package conformance is a shared behavioral test suite run against every
-// grcache backend via the common Cache interface. It guarantees behavioral
-// parity across backends and is the primary test artifact for each backend
-// package, which supplies its own constructor to Run and adds
-// backend-specific tests (e.g. connection-failure handling) separately.
+// grcache backend via the common Cache interface. It enforces identical
+// behavior across backends for every scenario it covers (see Run) and is
+// the primary test artifact for each backend package, which supplies its
+// own constructor to Run and adds backend-specific tests (e.g.
+// connection-failure handling) separately. It is not an exhaustive proof
+// of parity — new scenarios get added here as gaps are found.
 //
 // This package imports only the root grcache package, never a backend
 // subpackage — each backend's own test file imports conformance sideways,
@@ -53,6 +55,29 @@ func PopulateTagged(ctx context.Context, cache grcache.Cache, tag string, n int)
 	return nil
 }
 
+// RunOption configures Run's behavior for scenarios where backends have
+// documented, non-uniform guarantees. The zero value (no options) is the
+// strictest behavior; options only ever relax specific assertions for a
+// specific, documented reason — they never relax the default for every
+// backend.
+type RunOption func(*runConfig)
+
+type runConfig struct {
+	bestEffortTagConcurrency bool
+}
+
+// WithBestEffortTagConcurrency relaxes the ConcurrentTagSet scenario's
+// assertion from "exactly N keys invalidated" to "at least one key
+// invalidated, and never more than N" — for backends whose tag storage is
+// documented as best-effort/eventually-consistent under concurrent writes
+// (currently only grcache/memcached; see its package doc comment and
+// TestTagListRaceIsDocumentedNotFixed). Backends with a real transactional
+// or atomic tag-index write path (memory, redis, postgres, mongo) must not
+// use this option — they are expected to meet the strict guarantee.
+func WithBestEffortTagConcurrency() RunOption {
+	return func(cfg *runConfig) { cfg.bestEffortTagConcurrency = true }
+}
+
 // Run executes the full conformance suite against a fresh Cache instance
 // obtained from newCache for each scenario. Every backend's own test file
 // calls this with its own constructor closure so the same behavioral
@@ -62,6 +87,8 @@ func PopulateTagged(ctx context.Context, cache grcache.Cache, tag string, n int)
 //   - t: *testing.T
 //   - newCache: func() (grcache.Cache, error) — called once per scenario to
 //     get a fresh, isolated Cache instance
+//   - opts: ...RunOption — normally omitted; see WithBestEffortTagConcurrency
+//     for the one documented exception
 //
 // Example:
 //
@@ -70,8 +97,13 @@ func PopulateTagged(ctx context.Context, cache grcache.Cache, tag string, n int)
 //			return memory.NewMemoryCache()
 //		})
 //	}
-func Run(t *testing.T, newCache func() (grcache.Cache, error)) {
+func Run(t *testing.T, newCache func() (grcache.Cache, error), opts ...RunOption) {
 	t.Helper()
+
+	cfg := &runConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
 
 	t.Run("SetThenGet", func(t *testing.T) { testSetThenGet(t, newCache) })
 	t.Run("GetMissing", func(t *testing.T) { testGetMissing(t, newCache) })
@@ -81,6 +113,7 @@ func Run(t *testing.T, newCache func() (grcache.Cache, error)) {
 	t.Run("Exists", func(t *testing.T) { testExists(t, newCache) })
 	t.Run("TagInvalidation", func(t *testing.T) { testTagInvalidation(t, newCache) })
 	t.Run("ConcurrentAccess", func(t *testing.T) { testConcurrentAccess(t, newCache) })
+	t.Run("ConcurrentTagSet", func(t *testing.T) { testConcurrentTagSet(t, newCache, cfg.bestEffortTagConcurrency) })
 	t.Run("StatsSanity", func(t *testing.T) { testStatsSanity(t, newCache) })
 	t.Run("PostClose", func(t *testing.T) { testPostClose(t, newCache) })
 }
@@ -389,6 +422,60 @@ func testConcurrentAccess(t *testing.T, newCache func() (grcache.Cache, error)) 
 
 	if _, err := cache.Stats(ctx); err != nil {
 		t.Fatalf("Stats after concurrent access: %v", err)
+	}
+}
+
+// testConcurrentTagSet concurrently Sets N distinct keys all tagged with one
+// shared tag, then calls InvalidateTag once and asserts on the result.
+// Unlike testConcurrentAccess (which hammers a single shared key and
+// discards every error), this scenario is designed to actually prove tag-index
+// correctness under concurrency: backends with a real transactional or
+// atomic tag-index write path must invalidate exactly N keys; only the one
+// documented best-effort backend (memcached) is allowed a weaker bound.
+func testConcurrentTagSet(t *testing.T, newCache func() (grcache.Cache, error), bestEffort bool) {
+	t.Helper()
+	ctx := context.Background()
+	cache, err := newCache()
+	if err != nil {
+		t.Fatalf("newCache: %v", err)
+	}
+	defer cache.Close()
+
+	const n = 50
+	const tag = "concurrent-tag-set-tag"
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			key := fmt.Sprintf("concurrent-tag-set-key-%d", i)
+			errs[i] = cache.Set(ctx, key, []byte("v"), time.Hour, tag)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("Set(concurrent-tag-set-key-%d): %v", i, err)
+		}
+	}
+
+	removed, err := cache.InvalidateTag(ctx, tag)
+	if err != nil {
+		t.Fatalf("InvalidateTag: %v", err)
+	}
+
+	if bestEffort {
+		if removed <= 0 || removed > n {
+			t.Fatalf("InvalidateTag (best-effort) = %d, want 0 < n <= %d", removed, n)
+		}
+		return
+	}
+
+	if removed != n {
+		t.Fatalf("InvalidateTag = %d, want exactly %d (this backend is expected to have a strict, non-best-effort tag index)", removed, n)
 	}
 }
 

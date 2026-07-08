@@ -2,9 +2,14 @@
 
 // Package redis is grcache's primary production backend, built directly on
 // gourdiantoken's proven Redis handling conventions: the same Ping-on-construct
-// validation, the same error-wrapping style, and pipelining (not Lua/EVAL,
-// which gourdiantoken's own docs claim but its code never actually uses) for
-// atomic multi-key operations.
+// validation, the same error-wrapping style, and a transactional pipeline
+// (TxPipeline, i.e. MULTI/EXEC — not Lua/EVAL, which gourdiantoken's own docs
+// claim but its code never actually uses) for atomic multi-key operations.
+// TxPipeline, not the plain non-transactional Pipeline, is required here: a
+// connection failure mid-batch on a plain Pipeline can leave a value written
+// without all its tag memberships applied (or vice versa in InvalidateTag) —
+// MULTI/EXEC is what actually makes "atomic multi-key operations" true rather
+// than aspirational.
 //
 // Unlike gourdiantoken's Redis backend, which takes an already-built
 // *redis.Client, this package owns a RedisConfig and builds its own client —
@@ -182,7 +187,7 @@ func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Durati
 		return grcache.ErrInvalidTTL
 	}
 
-	pipe := c.client.Pipeline()
+	pipe := c.client.TxPipeline()
 	pipe.Set(ctx, valueKey(key), val, ttl)
 	for _, tag := range tags {
 		pipe.SAdd(ctx, tagKey(tag), key)
@@ -229,7 +234,7 @@ func (c *Cache) InvalidateTag(ctx context.Context, tag string) (int, error) {
 		return 0, nil
 	}
 
-	pipe := c.client.Pipeline()
+	pipe := c.client.TxPipeline()
 	for _, member := range members {
 		pipe.Del(ctx, valueKey(member))
 	}

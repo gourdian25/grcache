@@ -93,9 +93,14 @@ backend) and don't want a logging dependency at all.
   contract the interface exists to provide.
 - **No Lua/`EVAL`**: gourdiantoken's doc comments claim Lua scripting for
   atomic operations, but no real usage exists in its codebase (confirmed
-  by inspection) — atomicity there is actually achieved via `Pipeline`/
-  `SETNX`. grcache's Redis `InvalidateTag` matches gourdiantoken's *actual*
-  behavior (pipelining), not its documentation.
+  by inspection via grep) — its actual mechanism for these operations is
+  `Pipeline`/`SETNX` (batched calls), not Lua scripting. Whether
+  gourdiantoken's own `Pipeline` usage is itself transactional was not
+  independently verified — that's a separate repo's correctness, out of
+  scope here. grcache's Redis `Set`/`InvalidateTag` use go-redis's
+  `TxPipeline` (real `MULTI`/`EXEC`), not the plain non-transactional
+  `Pipeline` — a v0.1.0 bug used plain `Pipeline` here despite the package
+  doc already claiming atomicity; see CHANGELOG.md's `[0.1.1]` entry.
 - **Mongo TTL index**: reuses gourdiantoken's confirmed
   `expireAfterSeconds` TTL-index convention — the one backend besides
   Redis where expiry is the database's job, not grcache's. Documents with

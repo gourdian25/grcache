@@ -78,12 +78,15 @@
 //
 //  4. PostgreSQL (grcache/postgres) — via GORM. Tags live in a separate join
 //     table kept in sync with the entries table on every Set/Delete.
+//     Intended for test/dev/CI environments with Postgres already
+//     available but no Redis/memcached; prefer Redis in production.
 //
 //     cache, err := postgres.NewPostgresCache(postgres.PostgresConfig{DSN: dsn})
 //
 //  5. MongoDB (grcache/mongo) — tags live directly on the document as an
 //     array field. A TTL index (expireAfterSeconds: 0) gives native,
-//     database-managed expiry, the same as Redis's EX.
+//     database-managed expiry, the same as Redis's EX. Same intended use
+//     case as PostgreSQL above: test/dev/CI without Redis/memcached.
 //
 //     cache, err := mongo.NewMongoCache(mongo.MongoConfig{URI: uri, Database: "myapp"})
 //
@@ -142,7 +145,10 @@
 // Each backend subpackage implements Cache against its own client library.
 // A shared conformance package (imported sideways by every backend's own
 // tests, never the reverse) runs one behavioral test suite against all five
-// backends through the Cache interface, guaranteeing behavioral parity.
+// backends through the Cache interface, enforcing identical behavior for
+// every scenario the suite covers. It is not an exhaustive proof of
+// parity — see conformance.go for the current scenario list and each
+// backend's own test file for anything scenario-specific it adds on top.
 //
 // Testing:
 //

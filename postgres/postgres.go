@@ -1,9 +1,12 @@
 // File: postgres/postgres.go
 
-// Package postgres is a grcache backend added for parity with
-// gourdiantoken's GormTokenRepository, using GORM (tracked to its latest
-// release rather than pinned to gourdiantoken's version — see
-// docs/architecture.md) and its indexed-column/TableName() conventions.
+// Package postgres is a grcache backend for test/dev/CI environments that
+// have a PostgreSQL instance available but not Redis or memcached — it is
+// not a recommended production alternative to grcache/redis. It uses GORM
+// (tracked to its latest release rather than pinned to gourdiantoken's
+// version — see docs/architecture.md) and mirrors GORM conventions already
+// proven in gourdiantoken's GormTokenRepository (indexed columns,
+// TableName() overrides).
 //
 // Unlike Redis's Sets or Mongo's embedded array field, Postgres has no
 // native multi-value column well-suited to tag storage without added

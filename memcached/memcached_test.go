@@ -52,7 +52,11 @@ func newCacheForTest(t *testing.T) grcache.Cache {
 
 func TestConformance(t *testing.T) {
 	flushTestServer(t)
-	conformance.Run(t, newCache)
+	// memcached's tag emulation is documented best-effort/eventually
+	// consistent under concurrent writes (see the package doc comment and
+	// TestTagListRaceIsDocumentedNotFixed below) — this is the one backend
+	// that opts into the relaxed ConcurrentTagSet assertion.
+	conformance.Run(t, newCache, conformance.WithBestEffortTagConcurrency())
 	flushTestServer(t)
 }
 
@@ -69,6 +73,35 @@ func TestNewMemcachedCache_Unreachable(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("NewMemcachedCache with unreachable server = nil error, want error")
+	}
+}
+
+// TestLongTTLConversion exercises a ttl beyond memcached's 30-day
+// relative-expiration cutoff (relativeExpirationLimit in memcached.go),
+// which must be converted to an absolute Unix timestamp rather than passed
+// through as a relative second count. This proves the conversion round-trips
+// correctly through a real memcached server, not just that the Go duration
+// math in expirationSeconds is correct in isolation.
+func TestLongTTLConversion(t *testing.T) {
+	ctx := context.Background()
+	cache := newCacheForTest(t)
+
+	const longTTL = 45 * 24 * time.Hour // > the 30-day relative cutoff
+
+	if err := cache.Set(ctx, "long-ttl-key", []byte("still-here"), longTTL); err != nil {
+		t.Fatalf("Set with 45-day ttl: %v", err)
+	}
+
+	val, err := cache.Get(ctx, "long-ttl-key")
+	if err != nil {
+		t.Fatalf("Get after 45-day-ttl Set: %v (indicates the absolute-timestamp conversion is broken)", err)
+	}
+	if string(val) != "still-here" {
+		t.Fatalf("Get = %q, want %q", val, "still-here")
+	}
+
+	if exists, err := cache.Exists(ctx, "long-ttl-key"); err != nil || !exists {
+		t.Fatalf("Exists = (%v, %v), want (true, nil)", exists, err)
 	}
 }
 

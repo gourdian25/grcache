@@ -131,6 +131,12 @@ documented divergences from sibling conventions.
 | PostgreSQL | `grcache/postgres`   | Application sweep goroutine | Join table (`grcache_entry_tags`), kept in sync every `Set`/`Delete`      |
 | MongoDB    | `grcache/mongo`      | Native TTL index (`expireAfterSeconds: 0`) | Embedded array field on the same document          |
 
+Redis is the recommended default for production. PostgreSQL and MongoDB
+exist specifically for test/dev/CI environments where a Redis (or
+memcached) instance isn't available but a Postgres or Mongo instance
+already is — not as a general recommendation to run a cache on top of a
+relational or document database in production instead of Redis.
+
 ### In-memory
 
 ```go
@@ -207,6 +213,9 @@ background sweep here is the *only* reclamation mechanism, not a backstop;
 `Get`/`Exists`'s lazy expiry check is what keeps reads correct between
 sweeps.
 
+Intended for test/dev/CI environments with a Postgres instance already
+available but no Redis/memcached — prefer Redis in production.
+
 ### MongoDB
 
 ```go
@@ -222,6 +231,9 @@ Tags live directly as an array field on the same document — no join table
 needed, unlike Postgres. A TTL index (`expireAfterSeconds: 0`) gives
 native, database-managed expiry, the same as Redis's `EX`; documents with
 no `expiresAt` field (ttl=0) are simply never touched by the TTL monitor.
+
+Intended for test/dev/CI environments with a Mongo instance already
+available but no Redis/memcached — prefer Redis in production.
 
 ## 🏷️ Tag-Based Invalidation
 
@@ -364,10 +376,16 @@ cliff. Indicative numbers from this repo's own dev machine (Apple M4; run
 | Backend | 10 keys | 1,000 keys | 100,000 keys |
 |---|---|---|---|
 | memory | ~9µs | ~133µs | ~9.2ms |
-| Redis | ~3.0ms | ~3.1ms | ~65ms |
+| Redis | ~3.2ms | ~3.1ms | ~68ms |
 | PostgreSQL | ~26ms | ~26ms | ~93ms |
 | MongoDB | ~7.6ms | ~11ms | ~404ms |
 | memcached | ~4.1ms (10) | ~92ms (1,000, capped) | *not run — see below* |
+
+Redis's numbers above are post-`v0.1.1`'s `TxPipeline` fix (see CHANGELOG.md)
+— `MULTI`/`EXEC` overhead versus the previous non-transactional `Pipeline`
+turned out to be within measurement noise (a few percent, not a step
+change), since go-redis still sends the whole batch in one round trip
+either way.
 
 memcached's benchmark deliberately caps at 1,000 keys, not 100,000: its
 list-based tag emulation does a read-modify-write of the *entire* member
