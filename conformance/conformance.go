@@ -14,12 +14,28 @@ package conformance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gourdian25/grcache"
 )
+
+// PopulateTagged sets n keys, all tagged with tag, using a shared key prefix
+// so callers can identify them. It is intended for benchmark setup (e.g.
+// measuring InvalidateTag at 10/1k/100k-key cardinality) so the population
+// step isn't duplicated across every backend's benchmark file.
+func PopulateTagged(ctx context.Context, cache grcache.Cache, tag string, n int) error {
+	val := []byte("benchmark-value")
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("%s-key-%d", tag, i)
+		if err := cache.Set(ctx, key, val, time.Hour, tag); err != nil {
+			return fmt.Errorf("PopulateTagged: set %s: %w", key, err)
+		}
+	}
+	return nil
+}
 
 // Run executes the full conformance suite against a fresh Cache instance
 // obtained from newCache for each scenario.
@@ -85,7 +101,11 @@ func testExpiry(t *testing.T, newCache func() (grcache.Cache, error)) {
 	}
 	defer cache.Close()
 
-	if err := cache.Set(ctx, "expiring", []byte("v"), 50*time.Millisecond); err != nil {
+	// ttl/sleep are deliberately >= 1 second: memcached only supports
+	// second-granularity expiry (see grcache/memcached's expirationSeconds),
+	// so a shorter ttl here would pass on finer-grained backends but be
+	// meaningless on memcached.
+	if err := cache.Set(ctx, "expiring", []byte("v"), 1100*time.Millisecond); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
@@ -93,7 +113,7 @@ func testExpiry(t *testing.T, newCache func() (grcache.Cache, error)) {
 		t.Fatalf("Get (before expiry): %v", err)
 	}
 
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(1400 * time.Millisecond)
 
 	if _, err := cache.Get(ctx, "expiring"); !errors.Is(err, grcache.ErrKeyNotFound) {
 		t.Fatalf("Get (after expiry) error = %v, want ErrKeyNotFound", err)
