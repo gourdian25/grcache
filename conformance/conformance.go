@@ -26,6 +26,22 @@ import (
 // so callers can identify them. It is intended for benchmark setup (e.g.
 // measuring InvalidateTag at 10/1k/100k-key cardinality) so the population
 // step isn't duplicated across every backend's benchmark file.
+//
+// Parameters:
+//   - ctx: context.Context
+//   - cache: grcache.Cache — the backend under test
+//   - tag: string — every populated key is tagged with this one tag
+//   - n: int — how many keys to populate
+//
+// Returns:
+//   - error: the first Set failure encountered, if any
+//
+// Example:
+//
+//	if err := conformance.PopulateTagged(ctx, cache, "bench-tag", 1000); err != nil {
+//		b.Fatal(err)
+//	}
+//	n, err := cache.InvalidateTag(ctx, "bench-tag") // n == 1000
 func PopulateTagged(ctx context.Context, cache grcache.Cache, tag string, n int) error {
 	val := []byte("benchmark-value")
 	for i := 0; i < n; i++ {
@@ -38,7 +54,22 @@ func PopulateTagged(ctx context.Context, cache grcache.Cache, tag string, n int)
 }
 
 // Run executes the full conformance suite against a fresh Cache instance
-// obtained from newCache for each scenario.
+// obtained from newCache for each scenario. Every backend's own test file
+// calls this with its own constructor closure so the same behavioral
+// assertions run identically against all five backends.
+//
+// Parameters:
+//   - t: *testing.T
+//   - newCache: func() (grcache.Cache, error) — called once per scenario to
+//     get a fresh, isolated Cache instance
+//
+// Example:
+//
+//	func TestConformance(t *testing.T) {
+//		conformance.Run(t, func() (grcache.Cache, error) {
+//			return memory.NewMemoryCache()
+//		})
+//	}
 func Run(t *testing.T, newCache func() (grcache.Cache, error)) {
 	t.Helper()
 

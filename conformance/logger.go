@@ -9,7 +9,17 @@ import (
 
 // RecordingLogger is a grcache.Logger that records every message it
 // receives, for tests verifying a backend actually invokes its configured
-// Logger (as opposed to merely accepting one without ever calling it).
+// Logger (as opposed to merely accepting one without ever calling it). The
+// zero value is ready to use.
+//
+// Example:
+//
+//	logger := &conformance.RecordingLogger{}
+//	cache, err := redis.NewRedisCache(redis.RedisConfig{Addr: addr, Logger: logger})
+//	// ... use cache ...
+//	if logger.Total() == 0 {
+//		t.Fatal("expected at least one log message")
+//	}
 type RecordingLogger struct {
 	mu     sync.Mutex
 	Infos  []string

@@ -1,4 +1,7 @@
 .
+├── CHANGELOG.md
+├── CLAUDE.md
+├── LICENSE
 ├── Makefile
 ├── README.md
 ├── cache.go
@@ -9,8 +12,11 @@
 │   ├── architecture.md
 │   └── plan/
 │       └── grcache-plan.md
+├── docs.go
 ├── errors.go
 ├── errors_test.go
+├── example/
+│   └── example.go
 ├── go.mod
 ├── go.sum
 ├── logger.go
@@ -36,4 +42,4 @@
     ├── redis_bench_test.go
     └── redis_test.go
 
-8 directories, 28 files
+9 directories, 33 files

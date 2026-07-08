@@ -1,8 +1,9 @@
 // File: postgres/postgres.go
 
 // Package postgres is a grcache backend added for parity with
-// gourdiantoken's GormTokenRepository, using GORM (the same version
-// gourdiantoken depends on) and its indexed-column/TableName() conventions.
+// gourdiantoken's GormTokenRepository, using GORM (tracked to its latest
+// release rather than pinned to gourdiantoken's version — see
+// docs/architecture.md) and its indexed-column/TableName() conventions.
 //
 // Unlike Redis's Sets or Mongo's embedded array field, Postgres has no
 // native multi-value column well-suited to tag storage without added
@@ -59,12 +60,35 @@ type cacheEntryTag struct {
 func (cacheEntryTag) TableName() string { return "grcache_entry_tags" }
 
 // PostgresConfig configures a Cache constructed by NewPostgresCache.
+//
+// Example:
+//
+//	cfg := postgres.PostgresConfig{
+//		DSN: "host=localhost user=myuser password=mypass dbname=mydb port=5432 sslmode=disable",
+//	}
 type PostgresConfig struct {
-	DSN             string // required
-	MaxOpenConns    int
-	MaxIdleConns    int
+	// DSN is a standard libpq connection string. Required.
+	DSN string
+
+	// MaxOpenConns caps the connection pool size. 0 means use database/sql's
+	// own default (unlimited).
+	MaxOpenConns int
+
+	// MaxIdleConns caps idle connections retained in the pool. 0 means use
+	// database/sql's own default (2).
+	MaxIdleConns int
+
+	// ConnMaxLifetime bounds how long a pooled connection may be reused
+	// before being recycled. 0 means connections are reused indefinitely.
 	ConnMaxLifetime time.Duration
-	SweepInterval   time.Duration
+
+	// SweepInterval sets how often the background goroutine reclaims
+	// expired entries. Unlike Redis/Mongo, Postgres has no native expiry —
+	// this sweep is the only reclamation mechanism, not a backstop. Defaults
+	// to 30 seconds if <= 0. Get/Exists also check expiry lazily, so
+	// correctness never depends on this interval, only memory/storage
+	// reclamation timing does.
+	SweepInterval time.Duration
 
 	// Logger receives optional diagnostic messages (connection failures,
 	// sweep-cycle summaries, shutdown). A nil Logger disables logging
@@ -96,8 +120,28 @@ type Cache struct {
 
 var _ grcache.Cache = (*Cache)(nil)
 
-// NewPostgresCache opens a connection per cfg, auto-migrates the schema, and
-// validates connectivity via Ping before returning.
+// NewPostgresCache opens a connection per cfg, auto-migrates the schema
+// (two tables: grcache_entries and grcache_entry_tags), and validates
+// connectivity via Ping before returning.
+//
+// Parameters:
+//   - cfg: PostgresConfig — DSN is required
+//
+// Returns:
+//   - grcache.Cache: ready to use
+//   - error: non-nil if DSN is empty, the connection/Ping fails, or
+//     AutoMigrate fails; connection/Ping failures wrap
+//     grcache.ErrCacheUnavailable
+//
+// Example:
+//
+//	cache, err := postgres.NewPostgresCache(postgres.PostgresConfig{
+//		DSN: "host=localhost user=myuser password=mypass dbname=mydb port=5432 sslmode=disable",
+//	})
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	defer cache.Close()
 func NewPostgresCache(cfg PostgresConfig) (grcache.Cache, error) {
 	if cfg.DSN == "" {
 		return nil, fmt.Errorf("grcache/postgres: PostgresConfig.DSN is required")

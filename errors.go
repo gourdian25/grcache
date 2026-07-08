@@ -14,6 +14,12 @@ import "errors"
 // There is deliberately no IsNotFound(err error) bool helper: callers use
 // errors.Is(err, grcache.ErrKeyNotFound) directly, consistent with how
 // gourdiantoken's own sentinel errors are consumed.
+//
+// Example:
+//
+//	if _, err := cache.Get(ctx, key); errors.Is(err, grcache.ErrKeyNotFound) {
+//		// expected cache miss, not a failure
+//	}
 var (
 	// ErrKeyNotFound indicates the key does not exist or has expired.
 	ErrKeyNotFound = errors.New("grcache: key not found")

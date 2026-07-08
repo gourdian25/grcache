@@ -1,10 +1,11 @@
 # File: Makefile
 
-.PHONY: help build test race coverage coverage-summary coverage-check bench lint vet fmt staticcheck clean deps
+.PHONY: help build test race coverage coverage-summary coverage-check bench lint vet fmt staticcheck clean deps tag release goreleaser-check guard-version
 
 GO := go
 MODULE := github.com/gourdian25/grcache
 COVERAGE_MIN := 80
+VERSION ?=
 
 help:
 	@echo "Makefile targets for grcache:"
@@ -20,6 +21,9 @@ help:
 	@echo "  make fmt              Format code"
 	@echo "  make clean            Clean build artifacts"
 	@echo "  make deps             Verify and tidy dependencies"
+	@echo "  make tag VERSION=vX.Y.Z         Create and push a git tag"
+	@echo "  make release VERSION=vX.Y.Z     Tag, push, and run goreleaser release --clean"
+	@echo "  make goreleaser-check           Dry run: validate config + snapshot release (no tag/push)"
 
 test:
 	@echo "Running tests..."
@@ -95,5 +99,30 @@ deps:
 	@echo "Tidying dependencies..."
 	$(GO) mod tidy
 	@echo "✓ Dependency verification complete"
+
+guard-version:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "❌ VERSION is required (example: make release VERSION=v0.1.0)"; \
+		exit 1; \
+	fi
+
+tag: guard-version
+	@echo "Tagging $(VERSION)..."
+	git tag $(VERSION)
+	git push origin $(VERSION)
+	@echo "✓ Tagged and pushed $(VERSION)"
+
+release: guard-version tag
+	@echo "Releasing $(VERSION) with goreleaser..."
+	@which goreleaser > /dev/null || (echo "goreleaser not found. Install with: go install github.com/goreleaser/goreleaser/v2@latest" && exit 1)
+	goreleaser release --clean
+	@echo "✓ Released $(VERSION)"
+
+# Dry run: validates .goreleaser.yaml and builds a snapshot release locally
+# without requiring a git tag or pushing anything.
+goreleaser-check:
+	@which goreleaser > /dev/null || (echo "goreleaser not found. Install with: go install github.com/goreleaser/goreleaser/v2@latest" && exit 1)
+	goreleaser check
+	goreleaser release --snapshot --clean
 
 .DEFAULT_GOAL := help

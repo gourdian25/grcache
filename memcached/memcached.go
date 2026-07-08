@@ -39,9 +39,22 @@ const (
 )
 
 // MemcachedConfig configures a Cache constructed by NewMemcachedCache.
+//
+// Example:
+//
+//	cfg := memcached.MemcachedConfig{Servers: []string{"localhost:11211"}}
 type MemcachedConfig struct {
-	Servers      []string // required, e.g. []string{"localhost:11211"}
-	Timeout      time.Duration
+	// Servers is the list of memcached server addresses. Required, e.g.
+	// []string{"localhost:11211"}. Multiple servers are load-balanced by
+	// the underlying client's consistent-hashing key distribution.
+	Servers []string
+
+	// Timeout bounds how long a single operation may take. Defaults to the
+	// underlying client's own default (500ms) if zero.
+	Timeout time.Duration
+
+	// MaxIdleConns caps idle connections held per server. Defaults to the
+	// underlying client's own default if zero.
 	MaxIdleConns int
 
 	// Logger receives optional diagnostic messages (connection failures,
@@ -66,6 +79,24 @@ var _ grcache.Cache = (*Cache)(nil)
 
 // NewMemcachedCache builds a *memcache.Client from cfg and validates
 // connectivity with Ping before returning.
+//
+// Parameters:
+//   - cfg: MemcachedConfig — Servers is required
+//
+// Returns:
+//   - grcache.Cache: ready to use
+//   - error: non-nil if Servers is empty or Ping fails, wrapping
+//     grcache.ErrCacheUnavailable in the latter case
+//
+// Example:
+//
+//	cache, err := memcached.NewMemcachedCache(memcached.MemcachedConfig{
+//		Servers: []string{"localhost:11211"},
+//	})
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	defer cache.Close()
 func NewMemcachedCache(cfg MemcachedConfig) (grcache.Cache, error) {
 	if len(cfg.Servers) == 0 {
 		return nil, fmt.Errorf("grcache/memcached: MemcachedConfig.Servers is required")

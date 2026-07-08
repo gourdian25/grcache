@@ -2,8 +2,12 @@
 
 // Package mongo is a grcache backend added for parity with gourdiantoken's
 // MongoTokenRepository. It uses go.mongodb.org/mongo-driver v1 — the same
-// (deprecated-in-favor-of-v2, but version-pinned to match gourdiantoken
-// exactly for ecosystem consistency) driver gourdiantoken depends on.
+// driver family gourdiantoken depends on, tracked to its latest v1.x
+// release rather than pinned to gourdiantoken's exact version (see
+// docs/architecture.md's "Latest dependency versions" divergence). The v1
+// module is upstream-deprecated in favor of go.mongodb.org/mongo-driver/v2,
+// but migrating to that would be a breaking API rewrite out of scope for a
+// routine dependency bump.
 //
 // Unlike Postgres's separate join table, tags live directly as an array
 // field on the same document — Mongo's document model and multikey indexes
@@ -55,10 +59,24 @@ func (d cacheDocument) expired(now time.Time) bool {
 // explicitly flagged as an inconsistent shape — grcache owns a single
 // Config struct so every backend constructor has the identical
 // New<Backend>Cache(cfg Config) (grcache.Cache, error) signature.
+//
+// Example:
+//
+//	cfg := mongo.MongoConfig{
+//		URI:      "mongodb://localhost:27017",
+//		Database: "myapp",
+//	}
 type MongoConfig struct {
-	URI        string // required
-	Database   string // required
-	Collection string // default "grcache_entries"
+	// URI is the MongoDB connection string, e.g.
+	// "mongodb://localhost:27017". Required.
+	URI string
+
+	// Database is the database name to use. Required.
+	Database string
+
+	// Collection is the collection name to store entries in. Defaults to
+	// "grcache_entries" if empty.
+	Collection string
 
 	// Logger receives optional diagnostic messages (connection failures,
 	// shutdown). A nil Logger disables logging entirely.
@@ -90,6 +108,25 @@ var _ grcache.Cache = (*Cache)(nil)
 
 // NewMongoCache connects to cfg.URI, validates connectivity with Ping,
 // ensures the TTL and tag indexes exist, and returns a ready-to-use Cache.
+//
+// Parameters:
+//   - cfg: MongoConfig — URI and Database are required
+//
+// Returns:
+//   - grcache.Cache: ready to use
+//   - error: non-nil if URI/Database is empty, the connection/Ping fails
+//     (wrapping grcache.ErrCacheUnavailable), or index creation fails
+//
+// Example:
+//
+//	cache, err := mongo.NewMongoCache(mongo.MongoConfig{
+//		URI:      "mongodb://localhost:27017",
+//		Database: "myapp",
+//	})
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	defer cache.Close()
 func NewMongoCache(cfg MongoConfig) (grcache.Cache, error) {
 	if cfg.URI == "" {
 		return nil, fmt.Errorf("grcache/mongo: MongoConfig.URI is required")

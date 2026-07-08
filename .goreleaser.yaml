@@ -1,0 +1,72 @@
+version: 2
+
+project_name: grcache
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod verify
+
+builds:
+  # Library project — no binaries (example/ is a demo program, not a
+  # shipped CLI tool).
+  - skip: true
+
+archives:
+  - id: source
+    # Not tied to any build — the only build above is skipped (pure
+    # library, no binary), so without meta:true this archive silently
+    # produces nothing (confirmed by a real snapshot run without it).
+    meta: true
+    name_template: "{{ .ProjectName }}_{{ .Version }}_src"
+    formats:
+      - tar.gz
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+      - go.mod
+      - go.sum
+      # Both patterns are needed: "**/*.go" only matches files at least one
+      # directory deep (confirmed via a real snapshot build), so root-level
+      # files like cache.go/errors.go/logger.go/docs.go need "*.go" too.
+      - "*.go"
+      - "**/*.go"
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+
+release:
+  github:
+    owner: gourdian25
+    name: grcache
+  draft: false
+  prerelease: auto
+  name_template: "{{ .ProjectName }} {{ .Version }}"
+  header: |
+    ## {{ .ProjectName }} {{ .Version }}
+
+    Generic, backend-agnostic caching abstraction for the gourdian ecosystem.
+
+    ### Highlights
+    - Five backends behind one Cache interface: in-memory, Redis, memcached, PostgreSQL, MongoDB
+    - Tag-based bulk invalidation and per-key TTL on every backend
+    - A shared conformance test suite guaranteeing behavioral parity across backends
+    - Optional diagnostic logging via any grcache.Logger-compatible logger (grlog works with no adapter)
+
+    See [CHANGELOG.md](https://github.com/gourdian25/grcache/blob/master/CHANGELOG.md) for full details.
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - '^build:'
+      - '^refactor:'
+      - '^style:'
+      - README
+      - Merge pull request

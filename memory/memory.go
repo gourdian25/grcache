@@ -36,6 +36,13 @@ type Option func(*Cache)
 // entries. The default is 30 seconds. Sweeping is a memory-reclamation
 // optimization only — Get and Exists always check expiry lazily too, so
 // correctness never depends on the sweep interval.
+//
+// Parameters:
+//   - d: time.Duration — ignored if <= 0, leaving the default in place
+//
+// Example:
+//
+//	cache, err := memory.NewMemoryCache(memory.WithSweepInterval(5 * time.Second))
 func WithSweepInterval(d time.Duration) Option {
 	return func(c *Cache) {
 		if d > 0 {
@@ -47,13 +54,25 @@ func WithSweepInterval(d time.Duration) Option {
 // WithLogger installs an optional grcache.Logger for diagnostic messages
 // (sweep-cycle summaries, shutdown). Logging is always opt-in; without this
 // option the cache logs nothing.
+//
+// Parameters:
+//   - l: grcache.Logger — a nil value is equivalent to omitting this option
+//
+// Example:
+//
+//	cache, err := memory.NewMemoryCache(memory.WithLogger(grlog.NewDefaultLogger()))
 func WithLogger(l grcache.Logger) Option {
 	return func(c *Cache) {
 		c.logger = grcache.OrNop(l)
 	}
 }
 
-// Cache is an in-memory implementation of grcache.Cache.
+// Cache is an in-memory implementation of grcache.Cache. It has zero
+// external dependencies and does not coordinate state across processes or
+// replicas — running it behind multiple instances of an application means
+// each instance has its own independent cache that will diverge from the
+// others, which is expected, not a bug. Use grcache/redis, grcache/postgres,
+// or grcache/mongo for state that must be shared.
 type Cache struct {
 	mu   sync.RWMutex
 	data map[string]entry
@@ -72,7 +91,24 @@ type Cache struct {
 
 var _ grcache.Cache = (*Cache)(nil)
 
-// NewMemoryCache constructs a ready-to-use in-memory Cache.
+// NewMemoryCache constructs a ready-to-use in-memory Cache. Construction
+// never fails — the error return exists only to match the signature every
+// other backend's constructor uses.
+//
+// Parameters:
+//   - opts: ...Option — WithSweepInterval and/or WithLogger; both optional
+//
+// Returns:
+//   - grcache.Cache: ready to use immediately
+//   - error: always nil
+//
+// Example:
+//
+//	cache, err := memory.NewMemoryCache()
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	defer cache.Close()
 func NewMemoryCache(opts ...Option) (grcache.Cache, error) {
 	c := &Cache{
 		data:          make(map[string]entry),

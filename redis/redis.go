@@ -36,14 +36,37 @@ const (
 )
 
 // RedisConfig configures a Cache constructed by NewRedisCache. Zero-valued
-// fields fall back to sane defaults.
+// fields fall back to sane defaults (PoolSize 100, Dial/Read/WriteTimeout as
+// documented on each field below) — only Addr is required.
+//
+// Example:
+//
+//	cfg := redis.RedisConfig{Addr: "localhost:6379", Password: "secret", DB: 0}
 type RedisConfig struct {
-	Addr         string // required
-	Password     string
-	DB           int
-	PoolSize     int
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
+	// Addr is the Redis server address, e.g. "localhost:6379". Required.
+	Addr string
+
+	// Password authenticates with the server. Empty means no auth.
+	Password string
+
+	// DB selects the Redis logical database (0-15 by default server config).
+	DB int
+
+	// PoolSize is the maximum number of connections in the pool. Defaults
+	// to 100 — the one number with a direct gourdiantoken precedent (its
+	// own doc-comment example).
+	PoolSize int
+
+	// DialTimeout bounds how long connecting to Redis may take. Defaults to
+	// 5s, matching gourdiantoken's own Ping-timeout precedent.
+	DialTimeout time.Duration
+
+	// ReadTimeout bounds how long a read may take. Defaults to 3s (go-redis's
+	// own upstream default; gourdiantoken has no equivalent field to match).
+	ReadTimeout time.Duration
+
+	// WriteTimeout bounds how long a write may take. Defaults to 3s, same
+	// rationale as ReadTimeout.
 	WriteTimeout time.Duration
 
 	// Logger receives optional diagnostic messages (connection failures,
@@ -85,6 +108,23 @@ var _ grcache.Cache = (*Cache)(nil)
 // NewRedisCache builds a *redis.Client from cfg and validates connectivity
 // with a Ping before returning, mirroring gourdiantoken's constructor-time
 // validation step.
+//
+// Parameters:
+//   - cfg: RedisConfig — Addr is required; all other fields default to
+//     sane values (see RedisConfig's field docs)
+//
+// Returns:
+//   - grcache.Cache: ready to use
+//   - error: non-nil if Addr is empty or the connection/Ping fails, wrapping
+//     grcache.ErrCacheUnavailable in the latter case
+//
+// Example:
+//
+//	cache, err := redis.NewRedisCache(redis.RedisConfig{Addr: "localhost:6379"})
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	defer cache.Close()
 func NewRedisCache(cfg RedisConfig) (grcache.Cache, error) {
 	if cfg.Addr == "" {
 		return nil, fmt.Errorf("grcache/redis: RedisConfig.Addr is required")
