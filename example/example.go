@@ -25,7 +25,7 @@ import (
 	"github.com/gourdian25/grcache"
 	"github.com/gourdian25/grcache/memcached"
 	"github.com/gourdian25/grcache/memory"
-	"github.com/gourdian25/grcache/mongo"
+	"github.com/gourdian25/grcache/mongostore"
 	"github.com/gourdian25/grcache/postgres"
 	"github.com/gourdian25/grcache/redis"
 )
@@ -157,7 +157,7 @@ func demoPostgres(ctx context.Context) {
 
 func demoMongo(ctx context.Context) {
 	fmt.Println("\n--- mongo ---")
-	cache, err := mongo.NewMongoCache(mongo.MongoConfig{
+	cache, err := mongostore.NewMongoCache(mongostore.MongoConfig{
 		URI:      "mongodb://root:mongo_password@localhost:27018/?directConnection=true",
 		Database: "grcache_test",
 	})
