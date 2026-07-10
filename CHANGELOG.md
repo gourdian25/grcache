@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-10
+
+Ecosystem-alignment pass ahead of `grauth`. Contains a **breaking change**
+(allowed pre-1.0).
+
+### Changed
+
+- **Breaking:** `grcache/mongo` renamed to `grcache/mongostore`. The bare
+  `mongo` package name collided with the upstream driver's own package
+  (`go.mongodb.org/mongo-driver/mongo` also declares `package mongo`),
+  forcing every consumer that imports both in the same file (as `grauth`
+  will need to) to alias one manually. Update imports from
+  `github.com/gourdian25/grcache/mongo` to
+  `github.com/gourdian25/grcache/mongostore`; the package's exported API
+  (`NewMongoCache`, `MongoConfig`, ...) is otherwise unchanged.
+- `go.mod`'s `go` directive raised from `1.25.0` to `1.26.4`, aligning with
+  the rest of the gourdian25 ecosystem.
+- README: added `grpolicy` to the ecosystem section, and fixed a stale
+  Roadmap line claiming distributed invalidation pub/sub is blocked on
+  `grevents` "exist[ing]" — grevents has been released since v0.1.0.
+- Bumped `github.com/gourdian25/grlog` to `v0.1.1`.
+
+### Added
+
+- `SECURITY.md` (previously missing).
+
 ## [0.1.1] - 2026-07-08
 
 A post-release verification pass against `v0.1.0` (checked against actual

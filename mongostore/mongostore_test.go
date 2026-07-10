@@ -1,6 +1,6 @@
-// File: mongo/mongo_test.go
+// File: mongostore/mongostore_test.go
 
-package mongo_test
+package mongostore_test
 
 // Test URI reuses gourdiantoken's confirmed local Mongo settings exactly
 // (mongodb://root:mongo_password@localhost:27018/?directConnection=true —
@@ -20,7 +20,7 @@ import (
 
 	"github.com/gourdian25/grcache"
 	"github.com/gourdian25/grcache/conformance"
-	grcachemongo "github.com/gourdian25/grcache/mongo"
+	grcachemongo "github.com/gourdian25/grcache/mongostore"
 )
 
 const (

@@ -8,6 +8,24 @@ applied instead to general-purpose caching. It is the shared caching layer
 that `grauth` (permission/session caching), `graudit` (read-path caching),
 and `gourdianerp` (application-level caching) depend on.
 
+## 🌐 Part of the gourdian25 ecosystem
+
+grcache is one of several small, independent Go libraries meant to be used
+together:
+
+- [gourdiantoken](https://github.com/gourdian25/gourdiantoken) — JWT
+  access/refresh token issuance, verification, revocation, and rotation.
+- [grlog](https://github.com/gourdian25/grlog) — zero-dependency structured
+  logging; grcache's optional `Logger` interface is satisfied by it directly.
+- [grevents](https://github.com/gourdian25/grevents) — an in-process event
+  bus for decoupling producers of state changes from consumers that react
+  to them.
+- [graudit](https://github.com/gourdian25/graudit) — an append-only audit
+  log with pluggable storage backends, mirroring grcache's own layout.
+- [grpolicy](https://github.com/gourdian25/grpolicy) — attribute-based
+  policy evaluation (RBAC/ABAC), independent of any notion of "user" or
+  "role".
+
 ## 🎯 Why grcache?
 
 - **One interface, five backends.** Write your caching code once against
@@ -58,7 +76,7 @@ go get github.com/gourdian25/grcache/memory      # zero extra dependencies
 go get github.com/gourdian25/grcache/redis       # + github.com/redis/go-redis/v9
 go get github.com/gourdian25/grcache/memcached   # + github.com/bradfitz/gomemcache
 go get github.com/gourdian25/grcache/postgres    # + gorm.io/gorm, gorm.io/driver/postgres
-go get github.com/gourdian25/grcache/mongo       # + go.mongodb.org/mongo-driver
+go get github.com/gourdian25/grcache/mongostore  # + go.mongodb.org/mongo-driver
 ```
 
 ## 🚀 Quick Start
@@ -110,7 +128,7 @@ grcache (root)              — Cache interface, Stats, sentinel errors, Logger 
   ├── grcache/redis          — github.com/redis/go-redis/v9
   ├── grcache/memcached      — github.com/bradfitz/gomemcache
   ├── grcache/postgres       — gorm.io/gorm + gorm.io/driver/postgres
-  ├── grcache/mongo          — go.mongodb.org/mongo-driver
+  ├── grcache/mongostore     — go.mongodb.org/mongo-driver
   └── grcache/conformance    — shared behavioral test suite (imported by every backend's own tests)
 ```
 
@@ -129,7 +147,7 @@ documented divergences from sibling conventions.
 | Redis      | `grcache/redis`      | Native (`EX`) + lazy backstop | Redis Sets, pipelined `SMEMBERS`+`DEL`                                   |
 | Memcached  | `grcache/memcached`  | Native (`Expiration`)        | Serialized list — best-effort, eventually consistent (see below)         |
 | PostgreSQL | `grcache/postgres`   | Application sweep goroutine | Join table (`grcache_entry_tags`), kept in sync every `Set`/`Delete`      |
-| MongoDB    | `grcache/mongo`      | Native TTL index (`expireAfterSeconds: 0`) | Embedded array field on the same document          |
+| MongoDB    | `grcache/mongostore` | Native TTL index (`expireAfterSeconds: 0`) | Embedded array field on the same document          |
 
 Redis is the recommended default for production. PostgreSQL and MongoDB
 exist specifically for test/dev/CI environments where a Redis (or
@@ -401,8 +419,9 @@ eventual-consistency tradeoff, not a gap in the measurement.
 Explicitly deferred, not forgotten:
 
 - Prometheus/OpenTelemetry metrics adapter (separate module).
-- Distributed invalidation pub/sub, likely built on top of `grevents` once
-  that repo exists.
+- Distributed invalidation pub/sub, likely built on top of
+  [`grevents`](https://github.com/gourdian25/grevents) (already released,
+  not yet wired up here).
 - Cache-aside helper wrappers (e.g. `GetOrSet(ctx, key, loader)`), deferred
   to keep v1's surface area minimal until the core interface has been
   proven in real usage inside `grauth`.

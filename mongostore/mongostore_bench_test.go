@@ -1,6 +1,6 @@
-// File: mongo/mongo_bench_test.go
+// File: mongostore/mongostore_bench_test.go
 
-package mongo_test
+package mongostore_test
 
 import (
 	"context"
