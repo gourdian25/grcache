@@ -24,16 +24,28 @@ Run a single test: `go test -run TestSetThenGet ./memory/...` (or any backend's 
 
 ### Backend tests require live local services
 
-Every backend except `memory` needs a real running service — no mocks, no `miniredis`, no `testcontainers-go`, mirroring gourdiantoken's own testing philosophy. Connection settings are deliberately different from gourdiantoken's own test suite (different Redis DB index, different Postgres/Mongo database names) so both repos' tests can run against the same local instances without colliding:
+Every backend except `memory` needs a real running service — no mocks, no `miniredis`, no `testcontainers-go`, mirroring gourdiantoken's own testing philosophy. Connection settings are deliberately different from gourdiantoken's own test suite (different Redis DB index, different Postgres/Mongo database names) so both repos' tests can run against the same local instances without colliding — this is now formalized workspace-wide: grnoti, graudit, grcache, and gourdiantoken all share one running Postgres/Redis/Mongo/Memcached instance apiece, each repo using its own database/keyspace/DB-index:
 
 ```sh
-docker run -d --name grcache-redis      -p 6379:6379  redis:7 --requirepass redis_password
-docker run -d --name grcache-postgres   -p 5432:5432  -e POSTGRES_USER=postgres_user -e POSTGRES_PASSWORD=postgres_password postgres:16
-docker run -d --name grcache-mongo      -p 27018:27017 -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=mongo_password mongo:7
-docker run -d --name grcache-memcached  -p 11211:11211 memcached:1.6
+docker run -d --name gourdian-redis      -p 6379:6379  redis:7 --requirepass redis_password
+docker run -d --name gourdian-postgres   -p 5432:5432  -e POSTGRES_USER=postgres_user -e POSTGRES_PASSWORD=postgres_password postgres:16
+docker run -d --name gourdian-memcached  -p 11211:11211 memcached:1.6
+
+# Mongo requires a --keyFile once --replSet is combined with auth, even
+# single-node — see graudit's CLAUDE.md for the full keyfile-generation
+# steps this repo's Mongo container now shares with graudit/gourdiantoken.
+docker volume create gourdian-mongo-keyfile
+docker run --rm -v gourdian-mongo-keyfile:/keyfile-dir mongo:7 bash -c \
+  "openssl rand -base64 756 > /keyfile-dir/mongo-keyfile && chmod 400 /keyfile-dir/mongo-keyfile && chown 999:999 /keyfile-dir/mongo-keyfile"
+docker run -d --name gourdian-mongo-auth -p 27018:27017 \
+  -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=mongo_password \
+  -v gourdian-mongo-keyfile:/etc/mongo-keyfile-dir \
+  mongo:7 --replSet rs0 --keyFile /etc/mongo-keyfile-dir/mongo-keyfile
+docker exec gourdian-mongo-auth mongosh -u root -p mongo_password \
+  --authenticationDatabase admin --eval 'rs.initiate()'
 ```
 
-Then, once, create the Postgres test database: `createdb -U postgres_user -h localhost grcache_test` (or `psql ... -c "CREATE DATABASE grcache_test;"`). Redis and Mongo need no equivalent setup step — Redis DB 14 and the Mongo `grcache_test` database are created implicitly on first write.
+Then, once, create the Postgres test database: `createdb -U postgres_user -h localhost grcache_test` (or `psql ... -c "CREATE DATABASE grcache_test;"`). Redis and Mongo need no equivalent setup step — Redis DB 14 and the Mongo `grcache_test` database are created implicitly on first write. grcache's `mongostore` backend doesn't use transactions or replica-set-specific behavior, so connecting to the now-replica-set-enabled shared Mongo container needs no code change — a plain client connection to one member of a replica set works the same as connecting to a standalone instance for ordinary CRUD.
 
 ## Architecture
 

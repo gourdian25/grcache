@@ -346,32 +346,26 @@ pipelining) rather than assuming blanket compatibility.
 
 grcache's tests run against real local services (no mocks, no
 `miniredis`/`testcontainers-go`), mirroring gourdiantoken's testing
-philosophy. Start the services below before running `make test` / `make race`:
+philosophy. These are the same shared containers grnoti, graudit, and
+gourdiantoken test against (each repo gets its own database/keyspace/DB-index)
+— start them with:
 
 ```sh
-docker run -d --name grcache-redis      -p 6379:6379  redis:7 --requirepass redis_password
-docker run -d --name grcache-postgres   -p 5432:5432  -e POSTGRES_USER=postgres_user -e POSTGRES_PASSWORD=postgres_password postgres:16
-docker run -d --name grcache-mongo      -p 27018:27017 -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=mongo_password mongo:7
-docker run -d --name grcache-memcached  -p 11211:11211 memcached:1.6
-```
-
-Then create the Postgres test database once:
-
-```sh
-docker exec grcache-postgres psql -U postgres_user -d postgres -c "CREATE DATABASE grcache_test;"
+make docker-up   # starts the shared Postgres/Redis/Mongo/Memcached test containers
+make docker-down # stops them when you're done
 ```
 
 | Backend | Connection |
 |---|---|
 | Redis | `localhost:6379`, password `redis_password`, DB `14` |
 | PostgreSQL | `host=localhost user=postgres_user password=postgres_password dbname=grcache_test port=5432 sslmode=disable` |
-| MongoDB | `mongodb://root:mongo_password@localhost:27018/?directConnection=true`, database `grcache_test` |
+| MongoDB | `mongodb://root:mongo_password@localhost:27018/?replicaSet=rs0&authSource=admin&directConnection=true`, database `grcache_test` |
 | Memcached | `localhost:11211` |
 
-The Redis DB index, Postgres database name, and Mongo database name are
-deliberately different from gourdiantoken's own test settings (DB 15,
-`postgres_db`, and its own Mongo database) so both suites can run against
-the same local instances without colliding.
+The Redis DB index and Postgres/Mongo database names are deliberately
+different from gourdiantoken's own test settings (DB 15, `gourdiantoken_test`,
+and its own Mongo database) so both suites can run against the same shared
+instances without colliding.
 
 Every package independently maintains at least 80% test coverage, matching
 gourdiantoken's own `COVERAGE_MIN` convention:
