@@ -1,12 +1,18 @@
 # 🗄️ grcache — Generic, Backend-Agnostic Caching for Go
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/gourdian25/grcache.svg)](https://pkg.go.dev/github.com/gourdian25/grcache)
+[![Go Version](https://img.shields.io/badge/go-1.26.4+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 grcache is a generic, backend-agnostic caching abstraction for the gourdian
 ecosystem — the same architectural pattern
 [gourdiantoken](https://github.com/gourdian25/gourdiantoken) uses for token
 storage (`TokenRepository` interface → multiple backend implementations),
 applied instead to general-purpose caching. It is the shared caching layer
-that `grauth` (permission/session caching), `graudit` (read-path caching),
-and `gourdianerp` (application-level caching) depend on.
+that `grauth` (permission/session caching) and `graudit` (read-path caching)
+depend on, and that any service needing backend-agnostic caching can build on
+directly — `grnoti`, for example, wraps a `Cache` directly for idempotent
+event tracking, preference caching, and A/B experiment assignment (see below).
 
 ## 🌐 Part of the gourdian25 ecosystem
 
@@ -25,6 +31,14 @@ together:
 - [grpolicy](https://github.com/gourdian25/grpolicy) — attribute-based
   policy evaluation (RBAC/ABAC), independent of any notion of "user" or
   "role".
+- [grnoti](https://github.com/gourdian25/grnoti) — a push-notification
+  service (FCM dispatch, idempotent event processing, device-token
+  management, DLQ retry, circuit breaking, distributed rate limiting,
+  deterministic A/B experiment assignment, localization, topic-based
+  routing). A direct grcache consumer: `NewCacheIdempotencyStore`,
+  `NewCachedPreferencesStore`, and `NewCacheBackedExperimentEngine` each
+  wrap a `grcache.Cache` for idempotent event tracking, read-through
+  preference caching, and cache-backed experiment assignment respectively.
 
 ## 🎯 Why grcache?
 
@@ -50,6 +64,7 @@ together:
 - [Quick Start](#-quick-start)
 - [Architecture](#-architecture)
 - [Backends](#-backends)
+- [Thread Safety](#-thread-safety)
 - [Tag-Based Invalidation](#-tag-based-invalidation)
 - [TTL Semantics](#-ttl-semantics)
 - [Stats & Observability](#-stats--observability)
@@ -257,6 +272,45 @@ no `expiresAt` field (ttl=0) are simply never touched by the TTL monitor.
 
 Intended for test/dev/CI environments with a Mongo instance already
 available but no Redis/memcached — prefer Redis in production.
+
+## 🔒 Thread Safety
+
+Every `Cache` implementation returned by this package is safe for
+concurrent use by multiple goroutines — `Get`, `Set`, `Delete`, `Exists`,
+`InvalidateTag`, `Stats`, and `Close` can all be called concurrently from
+any number of goroutines with no external locking required. `Close` is
+idempotent on every backend (`sync.Once`, or an atomic compare-and-swap for
+the in-memory backend) — calling it more than once, including
+concurrently, is safe and returns `nil` on every call after the first.
+
+Per-backend notes on top of that baseline guarantee:
+
+- **In-memory** — a single `sync.RWMutex` guards both the value map and the
+  tag index together, so there is no race window where a reader could see
+  an updated value paired with a stale tag index, or vice versa.
+- **Redis** — `Set` and `InvalidateTag` use a transactional pipeline
+  (`TxPipeline`, real `MULTI`/`EXEC`) so a value write and its tag-set
+  memberships apply atomically as a unit, even under concurrent callers.
+- **Memcached** — per-key `Get`/`Set`/`Delete`/`Exists` are safe under
+  concurrency, but tag *membership* is best-effort/eventually consistent:
+  concurrent `Set` calls tagging the same tag can race and drop a member
+  from that tag's list (the key itself is never affected — only whether a
+  later `InvalidateTag` call for that tag catches it). See
+  [Memcached](#memcached) above for the full tradeoff.
+- **PostgreSQL** — schema creation (`CREATE TABLE/INDEX IF NOT EXISTS`) is
+  serialized by a Postgres advisory lock, so multiple processes
+  constructing a cache against the same fresh database concurrently don't
+  race on DDL; per-key reads/writes use standard transactional statements.
+- **MongoDB** — value, tags, and expiry are written together in one
+  `ReplaceOne` per `Set`, so a concurrent reader never observes a
+  partially-applied update.
+
+None of the above extends across processes: the in-memory backend's state
+is local to a single process by design (see [Out of Scope](#-out-of-scope)),
+so multiple instances behind different app replicas are expected to
+diverge. The other backends' concurrency guarantees are about safe
+concurrent *access* to shared backend state, not about giving the in-memory
+backend that same cross-process reach.
 
 ## 🏷️ Tag-Based Invalidation
 

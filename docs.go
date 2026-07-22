@@ -3,14 +3,20 @@
 // Package grcache provides a generic, backend-agnostic caching abstraction
 // for the gourdian ecosystem.
 //
-// Overview:
+// # Overview
+//
 // grcache is the same architectural pattern gourdiantoken uses for token
 // storage — a small interface (Cache) implemented by multiple interchangeable
 // backends — applied to general-purpose caching instead. It is the shared
-// caching layer grauth (permission/session caching), graudit (read-path
-// caching), and gourdianerp (application-level caching) depend on.
+// caching layer grauth (permission/session caching) and graudit (read-path
+// caching) depend on, and any service needing backend-agnostic caching can
+// build on directly — grnoti, for example, wraps a Cache directly for
+// idempotent event tracking (NewCacheIdempotencyStore), preference caching
+// (NewCachedPreferencesStore), and A/B experiment assignment
+// (NewCacheBackedExperimentEngine).
 //
-// Key Features:
+// # Key Features
+//
 //   - A single Cache interface: Get, Set, Delete, Exists, InvalidateTag,
 //     Stats, Close — implemented identically by all five backends
 //   - Per-key TTL on every Set call, with ttl=0 meaning "no expiry"
@@ -22,7 +28,7 @@
 //   - Optional diagnostic logging via any logger satisfying the small
 //     Logger interface — grlog.Logger works with no adapter
 //
-// Getting Started:
+// # Getting Started
 //
 //	import (
 //		"context"
@@ -51,7 +57,7 @@
 //		log.Println(string(val)) // "alice"
 //	}
 //
-// Backends:
+// # Backends
 //
 // grcache is a flat, single package — every backend's constructor and
 // Config type live directly in the grcache package (no subpackages to
@@ -95,13 +101,13 @@
 // Dragonfly and Valkey are Redis-protocol compatible — point RedisConfig.Addr
 // at either instead of building a separate backend.
 //
-// Tag-Based Invalidation:
+// # Tag-Based Invalidation
 //
 //	cache.Set(ctx, "session:abc", data, time.Hour, "user:42", "tenant:acme")
 //	cache.Set(ctx, "session:def", data, time.Hour, "user:42")
 //	n, err := cache.InvalidateTag(ctx, "user:42") // removes both sessions, n == 2
 //
-// TTL Semantics:
+// # TTL Semantics
 //
 // A ttl of 0 passed to Set means "no expiry" on every backend. Redis stores
 // no EX flag; Mongo omits the expiresAt field entirely so its TTL index never
@@ -111,7 +117,7 @@
 // (sweep goroutine, native TTL), so a not-yet-reaped expired entry is never
 // visible to a caller.
 //
-// Error Handling:
+// # Error Handling
 //
 //	val, err := cache.Get(ctx, key)
 //	if errors.Is(err, grcache.ErrKeyNotFound) {
@@ -126,7 +132,7 @@
 // against grcache's own sentinels never needs to know which backend is
 // underneath.
 //
-// Optional Logging:
+// # Optional Logging
 //
 // Every backend accepts an optional Logger for diagnostic messages
 // (connection failures, sweep-cycle summaries, shutdown). A nil Logger (the
@@ -140,7 +146,7 @@
 //		Logger: logger,
 //	})
 //
-// Architecture:
+// # Architecture
 //
 // grcache is one flat package: cache.go/errors.go/logger.go hold the Cache
 // interface, Stats, sentinel errors, and the Logger interface (stdlib
@@ -154,14 +160,14 @@
 // current scenario list and each backend's own *_test.go file for anything
 // scenario-specific it adds on top.
 //
-// Testing:
+// # Testing
 //
 // grcache's own tests run against real local Redis/Postgres/Mongo/memcached
 // instances — no mocks, no miniredis, no testcontainers-go — mirroring
 // gourdiantoken's testing philosophy. See CLAUDE.md and README.md for the
 // exact connection settings and docker commands to stand up each service.
 //
-// Performance:
+// # Performance
 //
 // Run `make bench` for current numbers. InvalidateTag is benchmarked at
 // 10/1k/100k-key tag cardinality per backend; memcached's list-based tag
@@ -169,7 +175,8 @@
 // high cardinality, a direct consequence of its best-effort tag model, not
 // an implementation oversight.
 //
-// Best Practices:
+// # Best Practices
+//
 //   - Always `defer cache.Close()` — it stops background goroutines
 //     (memory, postgres) and closes underlying connections (redis, mongo,
 //     memcached)
@@ -179,7 +186,7 @@
 //   - Don't rely on the in-memory backend for state shared across processes
 //     or replicas — use Redis, Postgres, or Mongo for that
 //
-// Out of Scope:
+// # Out of Scope
 //
 // grcache is explicitly not a general-purpose data store: there is no query
 // language, no filtering by value, no secondary indexes, and no range scans.
