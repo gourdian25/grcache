@@ -1,6 +1,6 @@
-// File: redis/redis_test.go
+// File: redis_test.go
 
-package redis_test
+package grcache_test
 
 // Test connection reuses gourdiantoken's confirmed local Redis settings
 // (localhost:6379, password "redis_password") for ecosystem consistency, but
@@ -18,61 +18,56 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/gourdian25/grcache"
-	"github.com/gourdian25/grcache/conformance"
-	"github.com/gourdian25/grcache/redis"
 )
 
 const (
-	testAddr     = "localhost:6379"
-	testPassword = "redis_password"
-	testDB       = 14
+	redisTestAddr     = "localhost:6379"
+	redisTestPassword = "redis_password"
+	redisTestDB       = 14
 )
 
-func flushTestDB(t *testing.T) {
+func flushRedisTestDB(t *testing.T) {
 	t.Helper()
-	client := goredis.NewClient(&goredis.Options{Addr: testAddr, Password: testPassword, DB: testDB})
-	defer client.Close()
+	client := goredis.NewClient(&goredis.Options{Addr: redisTestAddr, Password: redisTestPassword, DB: redisTestDB})
+	defer func() { _ = client.Close() }()
 	if err := client.FlushDB(context.Background()).Err(); err != nil {
 		t.Fatalf("FlushDB: %v", err)
 	}
 }
 
-func newCache() (grcache.Cache, error) {
-	return redis.NewRedisCache(redis.RedisConfig{
-		Addr:     testAddr,
-		Password: testPassword,
-		DB:       testDB,
+func newRedisCache() (grcache.Cache, error) {
+	return grcache.NewRedisCache(grcache.RedisConfig{
+		Addr:     redisTestAddr,
+		Password: redisTestPassword,
+		DB:       redisTestDB,
 	})
 }
 
-func newCacheForTest(t *testing.T) grcache.Cache {
+func newRedisCacheForTest(t *testing.T) grcache.Cache {
 	t.Helper()
-	flushTestDB(t)
-	cache, err := newCache()
+	if _, err := newRedisCache(); err != nil {
+		t.Skipf("Redis not available, skipping: %v", err)
+	}
+	flushRedisTestDB(t)
+	cache, err := newRedisCache()
 	if err != nil {
-		t.Fatalf("newCache: %v", err)
+		t.Fatalf("newRedisCache: %v", err)
 	}
 	t.Cleanup(func() {
-		cache.Close()
-		flushTestDB(t)
+		_ = cache.Close()
+		flushRedisTestDB(t)
 	})
 	return cache
 }
 
-func TestConformance(t *testing.T) {
-	flushTestDB(t)
-	conformance.Run(t, newCache)
-	flushTestDB(t)
-}
-
 func TestNewRedisCache_MissingAddr(t *testing.T) {
-	if _, err := redis.NewRedisCache(redis.RedisConfig{}); err == nil {
+	if _, err := grcache.NewRedisCache(grcache.RedisConfig{}); err == nil {
 		t.Fatal("NewRedisCache with empty Addr = nil error, want error")
 	}
 }
 
 func TestNewRedisCache_BadAddr(t *testing.T) {
-	_, err := redis.NewRedisCache(redis.RedisConfig{
+	_, err := grcache.NewRedisCache(grcache.RedisConfig{
 		Addr:        "localhost:1", // nothing listens here
 		DialTimeout: 200 * time.Millisecond,
 	})
@@ -83,7 +78,7 @@ func TestNewRedisCache_BadAddr(t *testing.T) {
 
 func TestInvalidateTag_PipelinedAtScale(t *testing.T) {
 	ctx := context.Background()
-	cache := newCacheForTest(t)
+	cache := newRedisCacheForTest(t)
 
 	const n = 500
 	for i := 0; i < n; i++ {
@@ -102,32 +97,35 @@ func TestInvalidateTag_PipelinedAtScale(t *testing.T) {
 	}
 }
 
-func TestWithLogger(t *testing.T) {
-	logger := &conformance.RecordingLogger{}
-	flushTestDB(t)
-	cache, err := redis.NewRedisCache(redis.RedisConfig{
-		Addr:     testAddr,
-		Password: testPassword,
-		DB:       testDB,
+func TestRedisWithLogger(t *testing.T) {
+	if _, err := newRedisCache(); err != nil {
+		t.Skipf("Redis not available, skipping: %v", err)
+	}
+	logger := &recordingLogger{}
+	flushRedisTestDB(t)
+	cache, err := grcache.NewRedisCache(grcache.RedisConfig{
+		Addr:     redisTestAddr,
+		Password: redisTestPassword,
+		DB:       redisTestDB,
 		Logger:   logger,
 	})
 	if err != nil {
 		t.Fatalf("NewRedisCache: %v", err)
 	}
-	defer flushTestDB(t)
+	defer flushRedisTestDB(t)
 
 	if err := cache.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	if logger.Total() == 0 {
+	if logger.total() == 0 {
 		t.Fatal("WithLogger: no messages were logged, want at least one (connect and/or close)")
 	}
 }
 
 func TestKeyPrefixCollisionSafety(t *testing.T) {
 	ctx := context.Background()
-	cache := newCacheForTest(t)
+	cache := newRedisCacheForTest(t)
 
 	// A key that collides textually with the tag namespace should still be
 	// stored/retrieved correctly, since grcache prefixes value keys and tag

@@ -8,10 +8,10 @@ import (
 )
 
 // Cache is the primary interface all backends implement. Every backend
-// subpackage (grcache/memory, grcache/redis, grcache/memcached,
-// grcache/postgres, grcache/mongo) provides a New<Backend>Cache constructor
-// returning a Cache, so application code can depend on this interface alone
-// and swap backends without changing call sites.
+// (memory.go, redis.go, memcached.go, postgres.go, mongo.go — all in this
+// same flat package) provides a New<Backend>Cache constructor returning a
+// Cache, so application code can depend on this interface alone and swap
+// backends without changing call sites.
 type Cache interface {
 	// Get retrieves the raw bytes stored at key.
 	//

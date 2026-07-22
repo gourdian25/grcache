@@ -1,12 +1,18 @@
 # 🗄️ grcache — Generic, Backend-Agnostic Caching for Go
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/gourdian25/grcache.svg)](https://pkg.go.dev/github.com/gourdian25/grcache)
+[![Go Version](https://img.shields.io/badge/go-1.26.4+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 grcache is a generic, backend-agnostic caching abstraction for the gourdian
 ecosystem — the same architectural pattern
 [gourdiantoken](https://github.com/gourdian25/gourdiantoken) uses for token
 storage (`TokenRepository` interface → multiple backend implementations),
 applied instead to general-purpose caching. It is the shared caching layer
-that `grauth` (permission/session caching), `graudit` (read-path caching),
-and `gourdianerp` (application-level caching) depend on.
+that `grauth` (permission/session caching) and `graudit` (read-path caching)
+depend on, and that any service needing backend-agnostic caching can build on
+directly — `grnoti`, for example, wraps a `Cache` directly for idempotent
+event tracking, preference caching, and A/B experiment assignment (see below).
 
 ## 🌐 Part of the gourdian25 ecosystem
 
@@ -25,6 +31,14 @@ together:
 - [grpolicy](https://github.com/gourdian25/grpolicy) — attribute-based
   policy evaluation (RBAC/ABAC), independent of any notion of "user" or
   "role".
+- [grnoti](https://github.com/gourdian25/grnoti) — a push-notification
+  service (FCM dispatch, idempotent event processing, device-token
+  management, DLQ retry, circuit breaking, distributed rate limiting,
+  deterministic A/B experiment assignment, localization, topic-based
+  routing). A direct grcache consumer: `NewCacheIdempotencyStore`,
+  `NewCachedPreferencesStore`, and `NewCacheBackedExperimentEngine` each
+  wrap a `grcache.Cache` for idempotent event tracking, read-through
+  preference caching, and cache-backed experiment assignment respectively.
 
 ## 🎯 Why grcache?
 
@@ -34,14 +48,16 @@ together:
 - **Tag-based invalidation everywhere.** Every backend supports tagging a
   key at `Set` time and bulk-removing everything under a tag later — this
   isn't a Redis-only feature bolted on top.
-- **No surprises across backends.** A shared conformance test suite runs
+- **No surprises across backends.** A shared contract test suite runs
   the exact same behavioral assertions against all five backends, so
   switching backends doesn't mean re-learning edge-case semantics.
-- **Zero dependency for the common case.** Import `grcache/memory` alone
-  and you pull in nothing beyond the Go standard library.
-- **Optional, adapter-free logging.** Plug in
-  [grlog](https://github.com/gourdian25/grlog) (or any logger with the
-  same three methods) with zero glue code.
+- **One flat package.** `go get github.com/gourdian25/grcache` and every
+  backend's constructor is right there — no subpackage-per-backend
+  navigation, matching every other repo in the gourdian ecosystem.
+- **Optional, slog-shaped logging.** Plug in
+  [grlog](https://github.com/gourdian25/grlog) via its `log/slog` adapter
+  (or any logger with the same four methods, including `*slog.Logger`
+  directly) with zero glue code.
 
 ## 📚 Table of Contents
 
@@ -49,6 +65,7 @@ together:
 - [Quick Start](#-quick-start)
 - [Architecture](#-architecture)
 - [Backends](#-backends)
+- [Thread Safety](#-thread-safety)
 - [Tag-Based Invalidation](#-tag-based-invalidation)
 - [TTL Semantics](#-ttl-semantics)
 - [Stats & Observability](#-stats--observability)
@@ -69,15 +86,12 @@ together:
 go get github.com/gourdian25/grcache
 ```
 
-Each backend is its own importable subpackage, so only add what you use:
-
-```sh
-go get github.com/gourdian25/grcache/memory      # zero extra dependencies
-go get github.com/gourdian25/grcache/redis       # + github.com/redis/go-redis/v9
-go get github.com/gourdian25/grcache/memcached   # + github.com/bradfitz/gomemcache
-go get github.com/gourdian25/grcache/postgres    # + gorm.io/gorm, gorm.io/driver/postgres
-go get github.com/gourdian25/grcache/mongostore  # + go.mongodb.org/mongo-driver
-```
+grcache is a single flat package — this one `go get` pulls in every
+backend's dependency (go-redis, gomemcache, pgx/v5, mongo-driver) whether
+you use that backend or not. See
+[`docs/architecture.md`](docs/architecture.md) §1 for why this trades away
+per-backend dependency isolation for consistency with the rest of the
+gourdian ecosystem's flat-package convention.
 
 ## 🚀 Quick Start
 
@@ -89,11 +103,11 @@ import (
 	"log"
 	"time"
 
-	"github.com/gourdian25/grcache/memory"
+	"github.com/gourdian25/grcache"
 )
 
 func main() {
-	cache, err := memory.NewMemoryCache()
+	cache, err := grcache.NewMemoryCache()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -123,31 +137,32 @@ all five backends (`go run ./example`) — the networked backends print a
 ## 🏗️ Architecture
 
 ```
-grcache (root)              — Cache interface, Stats, sentinel errors, Logger interface
-  ├── grcache/memory         — in-process map, zero dependencies
-  ├── grcache/redis          — github.com/redis/go-redis/v9
-  ├── grcache/memcached      — github.com/bradfitz/gomemcache
-  ├── grcache/postgres       — gorm.io/gorm + gorm.io/driver/postgres
-  ├── grcache/mongostore     — go.mongodb.org/mongo-driver
-  └── grcache/conformance    — shared behavioral test suite (imported by every backend's own tests)
+grcache (one flat package)
+  ├── cache.go, errors.go, logger.go, docs.go   — Cache interface, Stats, sentinel errors, Logger interface
+  ├── memory.go       — in-process map, zero dependencies
+  ├── redis.go         — github.com/redis/go-redis/v9
+  ├── memcached.go      — github.com/bradfitz/gomemcache
+  ├── postgres.go        — github.com/jackc/pgx/v5 + sqlc-generated queries (internal/postgresdb)
+  ├── mongo.go            — go.mongodb.org/mongo-driver
+  └── contract_cache_test.go — shared behavioral test suite (TestCache_Contract, one subtest per backend)
 ```
 
-Unlike gourdiantoken and grlog (both flat, single-package repos), grcache
-uses one subpackage per backend. This is deliberate: a flat package would
-force every backend's client library into every consumer's dependency
-graph, even consumers using only `grcache/memory` — see
-[`docs/architecture.md`](docs/architecture.md) for this and grcache's other
-documented divergences from sibling conventions.
+grcache was originally one subpackage per backend, to keep each backend's
+client library out of a consumer's dependency graph unless they imported
+that specific backend. That layout was reversed for consistency with the
+rest of the gourdian ecosystem's flat-package convention — see
+[`docs/architecture.md`](docs/architecture.md) for the full rationale and
+grcache's other documented divergences from sibling conventions.
 
 ## 💾 Backends
 
-| Backend    | Package             | Expiry mechanism            | Tag storage                                                              |
+| Backend    | Constructor          | Expiry mechanism            | Tag storage                                                              |
 |------------|----------------------|------------------------------|---------------------------------------------------------------------------|
-| In-memory  | `grcache/memory`     | Application sweep goroutine | In-process map                                                           |
-| Redis      | `grcache/redis`      | Native (`EX`) + lazy backstop | Redis Sets, pipelined `SMEMBERS`+`DEL`                                   |
-| Memcached  | `grcache/memcached`  | Native (`Expiration`)        | Serialized list — best-effort, eventually consistent (see below)         |
-| PostgreSQL | `grcache/postgres`   | Application sweep goroutine | Join table (`grcache_entry_tags`), kept in sync every `Set`/`Delete`      |
-| MongoDB    | `grcache/mongostore` | Native TTL index (`expireAfterSeconds: 0`) | Embedded array field on the same document          |
+| In-memory  | `NewMemoryCache`      | Application sweep goroutine | In-process map                                                           |
+| Redis      | `NewRedisCache`       | Native (`EX`) + lazy backstop | Redis Sets, pipelined `SMEMBERS`+`DEL`                                   |
+| Memcached  | `NewMemcachedCache`   | Native (`Expiration`)        | Serialized list — best-effort, eventually consistent (see below)         |
+| PostgreSQL | `NewPostgresCache`    | Application sweep goroutine | Join table (`grcache_entry_tags`), kept in sync every `Set`/`Delete`      |
+| MongoDB    | `NewMongoCache`       | Native TTL index (`expireAfterSeconds: 0`) | Embedded array field on the same document          |
 
 Redis is the recommended default for production. PostgreSQL and MongoDB
 exist specifically for test/dev/CI environments where a Redis (or
@@ -158,9 +173,9 @@ relational or document database in production instead of Redis.
 ### In-memory
 
 ```go
-cache, err := memory.NewMemoryCache(
-	memory.WithSweepInterval(30 * time.Second), // default
-	memory.WithLogger(logger),                   // optional
+cache, err := grcache.NewMemoryCache(
+	grcache.WithSweepInterval(30 * time.Second), // default
+	grcache.WithLogger(logger),                   // optional
 )
 ```
 
@@ -171,7 +186,7 @@ has its own independent cache that will diverge, which is expected.
 ### Redis
 
 ```go
-cache, err := redis.NewRedisCache(redis.RedisConfig{
+cache, err := grcache.NewRedisCache(grcache.RedisConfig{
 	Addr:         "localhost:6379", // required
 	Password:     "",
 	DB:           0,
@@ -193,7 +208,7 @@ code only ever uses `Pipeline`/`SETNX`, so grcache matches gourdiantoken's
 ### Memcached
 
 ```go
-cache, err := memcached.NewMemcachedCache(memcached.MemcachedConfig{
+cache, err := grcache.NewMemcachedCache(grcache.MemcachedConfig{
 	Servers:      []string{"localhost:11211"}, // required
 	Timeout:      500 * time.Millisecond,        // default
 	MaxIdleConns: 2,                              // default
@@ -209,27 +224,33 @@ tag can race and drop a member, meaning that key simply won't be swept up
 by a later `InvalidateTag` (the key itself is unaffected; only the tag
 index entry can be lost). Also note: memcached only supports
 second-granularity TTLs, so a sub-second `ttl` rounds up to 1 second rather
-than truncating to 0 (which would mean "never expire").
+than truncating to 0 (which would mean "never expire"). Both cache-value
+keys and tag-list keys are namespaced (`grcache:val:`/`grcache:tag:`) —
+previously only tag-list keys were prefixed, a gap fixed alongside this
+backend's GORM-era-adjacent flattening pass.
 
 ### PostgreSQL
 
 ```go
-cache, err := postgres.NewPostgresCache(postgres.PostgresConfig{
+cache, err := grcache.NewPostgresCache(grcache.PostgresConfig{
 	DSN:             "host=localhost user=myuser password=mypass dbname=mydb port=5432 sslmode=disable",
-	MaxOpenConns:    0, // database/sql default
-	MaxIdleConns:    0, // database/sql default
-	ConnMaxLifetime: 0, // reuse indefinitely
+	MaxConns:        0, // pgxpool default
+	MinConns:        0, // pgxpool default
+	MaxConnLifetime: 0, // reuse indefinitely
 	SweepInterval:   30 * time.Second, // default
 	Logger:          logger,            // optional
 })
 ```
 
-Via GORM. Two tables: `grcache_entries` (key/value/expires_at) and
-`grcache_entry_tags` (a composite-indexed join table), auto-migrated on
-construct. Postgres has no native expiry at all — unlike Redis/Mongo, the
-background sweep here is the *only* reclamation mechanism, not a backstop;
-`Get`/`Exists`'s lazy expiry check is what keeps reads correct between
-sweeps.
+Via `pgx/v5` with sqlc-generated queries (no ORM) — replacing an earlier
+GORM implementation. Two tables: `grcache_entries` (key/value/nullable
+expires_at) and `grcache_entry_tags` (a composite-indexed join table),
+schema applied on connect (`CREATE TABLE/INDEX IF NOT EXISTS`, serialized
+by a Postgres advisory lock so concurrent callers building a cache against
+the same fresh database don't race on the DDL). Postgres has no native
+expiry at all — unlike Redis/Mongo, the background sweep here is the
+*only* reclamation mechanism, not a backstop; `Get`/`Exists`'s lazy expiry
+check is what keeps reads correct between sweeps.
 
 Intended for test/dev/CI environments with a Postgres instance already
 available but no Redis/memcached — prefer Redis in production.
@@ -237,7 +258,7 @@ available but no Redis/memcached — prefer Redis in production.
 ### MongoDB
 
 ```go
-cache, err := mongo.NewMongoCache(mongo.MongoConfig{
+cache, err := grcache.NewMongoCache(grcache.MongoConfig{
 	URI:        "mongodb://localhost:27017", // required
 	Database:   "myapp",                       // required
 	Collection: "grcache_entries",              // default
@@ -252,6 +273,45 @@ no `expiresAt` field (ttl=0) are simply never touched by the TTL monitor.
 
 Intended for test/dev/CI environments with a Mongo instance already
 available but no Redis/memcached — prefer Redis in production.
+
+## 🔒 Thread Safety
+
+Every `Cache` implementation returned by this package is safe for
+concurrent use by multiple goroutines — `Get`, `Set`, `Delete`, `Exists`,
+`InvalidateTag`, `Stats`, and `Close` can all be called concurrently from
+any number of goroutines with no external locking required. `Close` is
+idempotent on every backend (`sync.Once`, or an atomic compare-and-swap for
+the in-memory backend) — calling it more than once, including
+concurrently, is safe and returns `nil` on every call after the first.
+
+Per-backend notes on top of that baseline guarantee:
+
+- **In-memory** — a single `sync.RWMutex` guards both the value map and the
+  tag index together, so there is no race window where a reader could see
+  an updated value paired with a stale tag index, or vice versa.
+- **Redis** — `Set` and `InvalidateTag` use a transactional pipeline
+  (`TxPipeline`, real `MULTI`/`EXEC`) so a value write and its tag-set
+  memberships apply atomically as a unit, even under concurrent callers.
+- **Memcached** — per-key `Get`/`Set`/`Delete`/`Exists` are safe under
+  concurrency, but tag *membership* is best-effort/eventually consistent:
+  concurrent `Set` calls tagging the same tag can race and drop a member
+  from that tag's list (the key itself is never affected — only whether a
+  later `InvalidateTag` call for that tag catches it). See
+  [Memcached](#memcached) above for the full tradeoff.
+- **PostgreSQL** — schema creation (`CREATE TABLE/INDEX IF NOT EXISTS`) is
+  serialized by a Postgres advisory lock, so multiple processes
+  constructing a cache against the same fresh database concurrently don't
+  race on DDL; per-key reads/writes use standard transactional statements.
+- **MongoDB** — value, tags, and expiry are written together in one
+  `ReplaceOne` per `Set`, so a concurrent reader never observes a
+  partially-applied update.
+
+None of the above extends across processes: the in-memory backend's state
+is local to a single process by design (see [Out of Scope](#-out-of-scope)),
+so multiple instances behind different app replicas are expected to
+diverge. The other backends' concurrency guarantees are about safe
+concurrent *access* to shared backend state, not about giving the in-memory
+backend that same cross-process reach.
 
 ## 🏷️ Tag-Based Invalidation
 
@@ -297,7 +357,7 @@ if errors.Is(err, grcache.ErrKeyNotFound) {
 }
 ```
 
-Backend-native errors (`redis.Nil`, `gorm.ErrRecordNotFound`,
+Backend-native errors (`redis.Nil`, `pgx.ErrNoRows`,
 `mongo.ErrNoDocuments`, `memcache.ErrCacheMiss`) are always translated into
 a grcache sentinel before being wrapped — a caller using `errors.Is`
 against grcache's own sentinels never needs to know which backend is
@@ -308,31 +368,34 @@ errors are consumed.
 ## 📝 Optional Logging
 
 Every backend accepts an optional `Logger` (a `Config.Logger` field, or
-`memory.WithLogger(...)` for the in-memory backend) for diagnostic messages
+`grcache.WithLogger(...)` for the in-memory backend) for diagnostic messages
 — connection failures, sweep-cycle summaries, shutdown. Logging is entirely
 opt-in: a nil Logger (the default) means grcache logs nothing, and the
 `grcache` root package itself does not depend on any logging library.
 
-`grcache.Logger` is a tiny structural interface (`Infof`/`Warnf`/`Errorf`),
-satisfied directly by [grlog](https://github.com/gourdian25/grlog)'s
-`*grlog.Logger` — the ecosystem's own recommended choice — with no adapter
-needed:
+`grcache.Logger` is a tiny structural interface shaped exactly like
+`*slog.Logger` (`Debug`/`Info`/`Warn`/`Error(msg string, args ...any)`), so
+`*slog.Logger` satisfies it directly. [grlog](https://github.com/gourdian25/grlog)
+plugs in via its `log/slog` adapter — the ecosystem's own recommended
+bridge:
 
 ```go
 import (
+	"log/slog"
+
 	"github.com/gourdian25/grlog"
-	"github.com/gourdian25/grcache/redis"
+	"github.com/gourdian25/grcache"
 )
 
-logger := grlog.NewDefaultLogger()
+logger := slog.New(grlog.NewSlogHandler(grlog.NewDefaultLogger()))
 
-cache, err := redis.NewRedisCache(redis.RedisConfig{
+cache, err := grcache.NewRedisCache(grcache.RedisConfig{
 	Addr:   "localhost:6379",
 	Logger: logger,
 })
 ```
 
-Any logger exposing the same three methods works — grlog is not required.
+Any logger exposing the same four methods works — grlog is not required.
 
 ## 🧩 Backend Compatibility
 
@@ -346,19 +409,13 @@ pipelining) rather than assuming blanket compatibility.
 
 grcache's tests run against real local services (no mocks, no
 `miniredis`/`testcontainers-go`), mirroring gourdiantoken's testing
-philosophy. Start the services below before running `make test` / `make race`:
+philosophy. These are the same shared containers grnoti, graudit, and
+gourdiantoken test against (each repo gets its own database/keyspace/DB-index)
+— start them with:
 
 ```sh
-docker run -d --name grcache-redis      -p 6379:6379  redis:7 --requirepass redis_password
-docker run -d --name grcache-postgres   -p 5432:5432  -e POSTGRES_USER=postgres_user -e POSTGRES_PASSWORD=postgres_password postgres:16
-docker run -d --name grcache-mongo      -p 27018:27017 -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=mongo_password mongo:7
-docker run -d --name grcache-memcached  -p 11211:11211 memcached:1.6
-```
-
-Then create the Postgres test database once:
-
-```sh
-docker exec grcache-postgres psql -U postgres_user -d postgres -c "CREATE DATABASE grcache_test;"
+make docker-up   # starts the shared Postgres/Redis/Mongo/Memcached test containers
+make docker-down # stops them when you're done
 ```
 
 | Backend | Connection |
@@ -368,13 +425,12 @@ docker exec grcache-postgres psql -U postgres_user -d postgres -c "CREATE DATABA
 | MongoDB | `mongodb://root:mongo_password@localhost:27018/?directConnection=true`, database `grcache_test` |
 | Memcached | `localhost:11211` |
 
-The Redis DB index, Postgres database name, and Mongo database name are
-deliberately different from gourdiantoken's own test settings (DB 15,
-`postgres_db`, and its own Mongo database) so both suites can run against
-the same local instances without colliding.
+The Redis DB index and Postgres/Mongo database names are deliberately
+different from gourdiantoken's own test settings (DB 15, `gourdiantoken_test`,
+and its own Mongo database) so both suites can run against the same shared
+instances without colliding.
 
-Every package independently maintains at least 80% test coverage, matching
-gourdiantoken's own `COVERAGE_MIN` convention:
+The root package maintains 95.6% test coverage, enforced by a 95% gate:
 
 ```sh
 make coverage-check
@@ -443,7 +499,7 @@ make vet               # go vet
 make lint              # golangci-lint (if installed)
 make test               # go test -cover ./...
 make race                # go test -race ./...  — required before any PR touching backend code
-make coverage-check        # every package must independently meet 80%
+make coverage-check        # the root package must meet 95%
 ```
 
 See [`CLAUDE.md`](CLAUDE.md) for the full architecture rundown and
@@ -460,7 +516,9 @@ make goreleaser-check          # dry run — validates .goreleaser.yaml, builds 
 make release VERSION=vX.Y.Z    # tags, pushes, and runs goreleaser release --clean
 ```
 
-See [`CHANGELOG.md`](CHANGELOG.md) for release history.
+See [`CHANGELOG.md`](CHANGELOG.md) for release history and
+[`SECURITY.md`](SECURITY.md) to report a vulnerability privately instead of
+opening a public issue.
 
 ## 📄 License
 

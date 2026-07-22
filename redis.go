@@ -1,21 +1,21 @@
-// File: redis/redis.go
+// File: redis.go
 
-// Package redis is grcache's primary production backend, built directly on
-// gourdiantoken's proven Redis handling conventions: the same Ping-on-construct
-// validation, the same error-wrapping style, and a transactional pipeline
-// (TxPipeline, i.e. MULTI/EXEC — not Lua/EVAL, which gourdiantoken's own docs
-// claim but its code never actually uses) for atomic multi-key operations.
-// TxPipeline, not the plain non-transactional Pipeline, is required here: a
-// connection failure mid-batch on a plain Pipeline can leave a value written
-// without all its tag memberships applied (or vice versa in InvalidateTag) —
-// MULTI/EXEC is what actually makes "atomic multi-key operations" true rather
-// than aspirational.
+// The Redis backend (redisCache) is grcache's primary production backend,
+// built directly on gourdiantoken's proven Redis handling conventions: the
+// same Ping-on-construct validation, the same error-wrapping style, and a
+// transactional pipeline (TxPipeline, i.e. MULTI/EXEC — not Lua/EVAL, which
+// gourdiantoken's own docs claim but its code never actually uses) for
+// atomic multi-key operations. TxPipeline, not the plain non-transactional
+// Pipeline, is required here: a connection failure mid-batch on a plain
+// Pipeline can leave a value written without all its tag memberships
+// applied (or vice versa in InvalidateTag) — MULTI/EXEC is what actually
+// makes "atomic multi-key operations" true rather than aspirational.
 //
 // Unlike gourdiantoken's Redis backend, which takes an already-built
-// *redis.Client, this package owns a RedisConfig and builds its own client —
+// *redis.Client, this backend owns a RedisConfig and builds its own client —
 // grcache is meant to be usable standalone, without requiring callers to
 // already have a *redis.Client on hand.
-package redis
+package grcache
 
 import (
 	"context"
@@ -25,8 +25,6 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
-
-	"github.com/gourdian25/grcache"
 )
 
 const (
@@ -46,7 +44,7 @@ const (
 //
 // Example:
 //
-//	cfg := redis.RedisConfig{Addr: "localhost:6379", Password: "secret", DB: 0}
+//	cfg := grcache.RedisConfig{Addr: "localhost:6379", Password: "secret", DB: 0}
 type RedisConfig struct {
 	// Addr is the Redis server address, e.g. "localhost:6379". Required.
 	Addr string
@@ -76,7 +74,7 @@ type RedisConfig struct {
 
 	// Logger receives optional diagnostic messages (connection failures,
 	// shutdown). A nil Logger disables logging entirely.
-	Logger grcache.Logger
+	Logger Logger
 }
 
 func (cfg RedisConfig) withDefaults() RedisConfig {
@@ -95,10 +93,10 @@ func (cfg RedisConfig) withDefaults() RedisConfig {
 	return cfg
 }
 
-// Cache is a Redis-backed implementation of grcache.Cache.
-type Cache struct {
+// redisCache is a Redis-backed implementation of Cache.
+type redisCache struct {
 	client *goredis.Client
-	logger grcache.Logger
+	logger Logger
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -108,7 +106,7 @@ type Cache struct {
 	evictions atomic.Uint64
 }
 
-var _ grcache.Cache = (*Cache)(nil)
+var _ Cache = (*redisCache)(nil)
 
 // NewRedisCache builds a *redis.Client from cfg and validates connectivity
 // with a Ping before returning, mirroring gourdiantoken's constructor-time
@@ -119,23 +117,23 @@ var _ grcache.Cache = (*Cache)(nil)
 //     sane values (see RedisConfig's field docs)
 //
 // Returns:
-//   - grcache.Cache: ready to use
+//   - Cache: ready to use
 //   - error: non-nil if Addr is empty or the connection/Ping fails, wrapping
-//     grcache.ErrCacheUnavailable in the latter case
+//     ErrCacheUnavailable in the latter case
 //
 // Example:
 //
-//	cache, err := redis.NewRedisCache(redis.RedisConfig{Addr: "localhost:6379"})
+//	cache, err := grcache.NewRedisCache(grcache.RedisConfig{Addr: "localhost:6379"})
 //	if err != nil {
 //		log.Fatal(err)
 //	}
 //	defer cache.Close()
-func NewRedisCache(cfg RedisConfig) (grcache.Cache, error) {
+func NewRedisCache(cfg RedisConfig) (Cache, error) {
 	if cfg.Addr == "" {
 		return nil, fmt.Errorf("grcache/redis: RedisConfig.Addr is required")
 	}
 	cfg = cfg.withDefaults()
-	logger := grcache.OrNop(cfg.Logger)
+	logger := OrNop(cfg.Logger)
 
 	client := goredis.NewClient(&goredis.Options{
 		Addr:         cfg.Addr,
@@ -151,40 +149,40 @@ func NewRedisCache(cfg RedisConfig) (grcache.Cache, error) {
 	defer cancel()
 	if _, err := client.Ping(ctx).Result(); err != nil {
 		_ = client.Close()
-		logger.Errorf("grcache/redis: connect %s failed: %v", cfg.Addr, err)
-		return nil, fmt.Errorf("grcache/redis: connect %s: %w", cfg.Addr, grcache.ErrCacheUnavailable)
+		logger.Error("grcache/redis: connect failed", "addr", cfg.Addr, "error", err)
+		return nil, fmt.Errorf("grcache/redis: connect %s: %w", cfg.Addr, ErrCacheUnavailable)
 	}
 
-	logger.Infof("grcache/redis: connected to %s (db %d)", cfg.Addr, cfg.DB)
-	return &Cache{client: client, logger: logger}, nil
+	logger.Info("grcache/redis: connected", "addr", cfg.Addr, "db", cfg.DB)
+	return &redisCache{client: client, logger: logger}, nil
 }
 
 func valueKey(key string) string { return valuePrefix + key }
 func tagKey(tag string) string   { return tagPrefix + tag }
 
-func (c *Cache) Get(ctx context.Context, key string) ([]byte, error) {
+func (c *redisCache) Get(ctx context.Context, key string) ([]byte, error) {
 	if c.closed.Load() {
-		return nil, grcache.ErrClosed
+		return nil, ErrClosed
 	}
 
 	val, err := c.client.Get(ctx, valueKey(key)).Bytes()
 	if err != nil {
 		if err == goredis.Nil {
 			c.misses.Add(1)
-			return nil, fmt.Errorf("grcache/redis: get %q: %w", key, grcache.ErrKeyNotFound)
+			return nil, fmt.Errorf("grcache/redis: get %q: %w", key, ErrKeyNotFound)
 		}
-		return nil, fmt.Errorf("grcache/redis: get %q: %w", key, grcache.ErrCacheUnavailable)
+		return nil, fmt.Errorf("grcache/redis: get %q: %w", key, ErrCacheUnavailable)
 	}
 	c.hits.Add(1)
 	return val, nil
 }
 
-func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Duration, tags ...string) error {
+func (c *redisCache) Set(ctx context.Context, key string, val []byte, ttl time.Duration, tags ...string) error {
 	if c.closed.Load() {
-		return grcache.ErrClosed
+		return ErrClosed
 	}
 	if ttl < 0 {
-		return grcache.ErrInvalidTTL
+		return ErrInvalidTTL
 	}
 
 	pipe := c.client.TxPipeline()
@@ -193,42 +191,42 @@ func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Durati
 		pipe.SAdd(ctx, tagKey(tag), key)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("grcache/redis: set %q: %w", key, grcache.ErrCacheUnavailable)
+		return fmt.Errorf("grcache/redis: set %q: %w", key, ErrCacheUnavailable)
 	}
 	return nil
 }
 
-func (c *Cache) Delete(ctx context.Context, key string) error {
+func (c *redisCache) Delete(ctx context.Context, key string) error {
 	if c.closed.Load() {
-		return grcache.ErrClosed
+		return ErrClosed
 	}
 
 	if err := c.client.Del(ctx, valueKey(key)).Err(); err != nil {
-		return fmt.Errorf("grcache/redis: delete %q: %w", key, grcache.ErrCacheUnavailable)
+		return fmt.Errorf("grcache/redis: delete %q: %w", key, ErrCacheUnavailable)
 	}
 	return nil
 }
 
-func (c *Cache) Exists(ctx context.Context, key string) (bool, error) {
+func (c *redisCache) Exists(ctx context.Context, key string) (bool, error) {
 	if c.closed.Load() {
-		return false, grcache.ErrClosed
+		return false, ErrClosed
 	}
 
 	n, err := c.client.Exists(ctx, valueKey(key)).Result()
 	if err != nil {
-		return false, fmt.Errorf("grcache/redis: exists %q: %w", key, grcache.ErrCacheUnavailable)
+		return false, fmt.Errorf("grcache/redis: exists %q: %w", key, ErrCacheUnavailable)
 	}
 	return n > 0, nil
 }
 
-func (c *Cache) InvalidateTag(ctx context.Context, tag string) (int, error) {
+func (c *redisCache) InvalidateTag(ctx context.Context, tag string) (int, error) {
 	if c.closed.Load() {
-		return 0, grcache.ErrClosed
+		return 0, ErrClosed
 	}
 
 	members, err := c.client.SMembers(ctx, tagKey(tag)).Result()
 	if err != nil {
-		return 0, fmt.Errorf("grcache/redis: invalidate tag %q: %w", tag, grcache.ErrCacheUnavailable)
+		return 0, fmt.Errorf("grcache/redis: invalidate tag %q: %w", tag, ErrCacheUnavailable)
 	}
 	if len(members) == 0 {
 		return 0, nil
@@ -240,18 +238,18 @@ func (c *Cache) InvalidateTag(ctx context.Context, tag string) (int, error) {
 	}
 	pipe.Del(ctx, tagKey(tag))
 	if _, err := pipe.Exec(ctx); err != nil {
-		return 0, fmt.Errorf("grcache/redis: invalidate tag %q: %w", tag, grcache.ErrCacheUnavailable)
+		return 0, fmt.Errorf("grcache/redis: invalidate tag %q: %w", tag, ErrCacheUnavailable)
 	}
 
 	return len(members), nil
 }
 
-func (c *Cache) Stats(ctx context.Context) (grcache.Stats, error) {
+func (c *redisCache) Stats(ctx context.Context) (Stats, error) {
 	if c.closed.Load() {
-		return grcache.Stats{}, grcache.ErrClosed
+		return Stats{}, ErrClosed
 	}
 
-	return grcache.Stats{
+	return Stats{
 		Hits:      c.hits.Load(),
 		Misses:    c.misses.Load(),
 		Evictions: c.evictions.Load(),
@@ -262,12 +260,12 @@ func (c *Cache) Stats(ctx context.Context) (grcache.Stats, error) {
 // Close closes the underlying *redis.Client, guarded by sync.Once since
 // go-redis errors on a double Close — the same reason gourdiantoken's own
 // RedisTokenRepository.Close guards itself the same way.
-func (c *Cache) Close() error {
+func (c *redisCache) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
 		err = c.client.Close()
-		c.logger.Infof("grcache/redis: cache closed")
+		c.logger.Info("grcache/redis: cache closed")
 	})
 	return err
 }

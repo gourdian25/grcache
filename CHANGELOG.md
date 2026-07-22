@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Ecosystem-wide Stage 2 pass: flattened to a single package, GORM removed,
+a couple of real bug fixes, and coverage raised. Contains **breaking
+changes** (allowed pre-1.0).
+
+### Changed (breaking)
+
+- `Logger`'s three printf-style methods (`Infof`/`Warnf`/`Errorf(format
+  string, args ...interface{})`) replaced with four `log/slog`-shaped
+  methods (`Debug`/`Info`/`Warn`/`Error(msg string, args ...any)`), matching
+  `*slog.Logger`'s own signatures exactly so any slog-based logger —
+  including `*grlog.Logger` via `slog.New(grlog.NewSlogHandler(...))` —
+  satisfies it with no adapter. Allowed pre-1.0; consistent with the same
+  change landing across grevents/graudit/grpolicy/grnoti/gourdiantoken in
+  this pass. Real structured field values (previously flattened into
+  printf format strings) now reach any structured-output logger intact.
+
+### Changed
+
+- **Breaking:** flattened from one root package plus a subpackage per
+  backend (`grcache/memory`, `grcache/redis`, `grcache/memcached`,
+  `grcache/postgres`, `grcache/mongostore`) into a single flat package,
+  matching every other repo in the gourdian ecosystem's convention (see
+  `docs/architecture.md` §1). Every backend's `New<Backend>Cache`
+  constructor and `<Backend>Config` type now live directly in
+  `github.com/gourdian25/grcache` — update imports from e.g.
+  `github.com/gourdian25/grcache/redis` + `redis.NewRedisCache(...)` to
+  `github.com/gourdian25/grcache` + `grcache.NewRedisCache(...)`. This also
+  resolves the reason `grcache/mongo` was renamed to `grcache/mongostore`
+  in `v0.2.0` (avoiding a package-name collision with
+  `go.mongodb.org/mongo-driver/mongo`) — as a file within one flat package
+  rather than a separate importable package, `mongo.go` no longer
+  collides with anything, so the file (and its internal error-message
+  prefix) reverts to the shorter, clearer `mongo` name.
+- **Breaking:** the PostgreSQL backend (`NewPostgresCache`) no longer uses
+  GORM — rewritten on `pgx/v5` with sqlc-generated queries (see
+  `internal/postgresdb`), matching gourdiantoken's and grnoti's own
+  Postgres backend pattern. `PostgresConfig`'s pool-tuning fields renamed
+  from `database/sql`-style (`MaxOpenConns`/`MaxIdleConns`) to pgxpool's
+  own (`MaxConns`/`MinConns`), an honest reflection of the underlying pool
+  library changing.
+- Folded the standalone `conformance` package into the root package as
+  `contract_cache_test.go` (`runCacheContract`, run via
+  `TestCache_Contract`'s per-backend subtests), matching the rest of the
+  gourdian ecosystem's convention.
+- Every networked backend's test factory now skips gracefully (`t.Skipf`)
+  rather than failing hard when its live service isn't reachable, matching
+  the rest of the gourdian ecosystem's convention.
+- `make coverage-check`'s threshold raised from 80% to 95%, and it now
+  checks only the root package (previously iterated over one directory
+  per backend subpackage, including a stale `./mongo` entry that never
+  matched the actual `mongostore` directory name and so silently reported
+  "no coverage output" for it on every run — moot now that there's only
+  one package to measure).
+
+### Fixed
+
+- The memcached backend's cache-*value* keys are now namespaced
+  (`grcache:val:`), matching every other backend's key-prefixing
+  convention. Previously only memcached's tag-list keys carried the
+  `grcache:tag:` prefix; the actual cached values themselves were stored
+  under bare, unprefixed keys — no defense-in-depth against a same-named
+  key from another memcached user of the same server/pool.
+
+### Testing
+
+- Coverage raised to 95.6% on the root package (previously ranging
+  84.7%-96.7% per backend subpackage, per-package rather than aggregate),
+  closing gaps in every backend's `ErrCacheUnavailable`-wrapping branches
+  (via a new white-box `internal_coverage_test.go` that closes/disconnects
+  each backend's underlying client or pool directly, the same technique
+  used throughout the gourdian ecosystem — see gourdiantoken's own
+  repository coverage tests), a shared `InvalidTTL` contract scenario
+  covering all five backends at once (previously only tested against the
+  in-memory backend), and a handful of per-backend constructor/schema/
+  index-creation edge cases.
+
+### Documentation
+
+- README: fixed the documented Mongo test URI, which included an
+  unnecessary `replicaSet=rs0&authSource=admin` — the actual `mongo_test.go`
+  only needs `directConnection=true`.
+- README: stated the precise root-package coverage number (95.6%, via
+  `make coverage-check`) instead of the looser "at least 95%".
+- README: linked `SECURITY.md` alongside the existing `CHANGELOG.md`
+  reference in the Releasing section.
+
 ## [0.2.0] - 2026-07-10
 
 Ecosystem-alignment pass ahead of `grauth`. Contains a **breaking change**
