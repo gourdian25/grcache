@@ -1,15 +1,16 @@
-// File: mongostore/mongostore.go
+// File: mongo.go
 
-// Package mongostore is a grcache backend for test/dev/CI environments that have
-// a MongoDB instance available but not Redis or memcached — it is not a
-// recommended production alternative to grcache/redis. It uses
-// go.mongodb.org/mongo-driver v1 — the same driver family gourdiantoken
-// depends on, tracked to its latest v1.x release rather than pinned to
-// gourdiantoken's exact version (see docs/architecture.md's "Latest
-// dependency versions" divergence), and reuses gourdiantoken's proven
-// TTL-index convention (see below). The v1 module is upstream-deprecated in
-// favor of go.mongodb.org/mongo-driver/v2, but migrating to that would be a
-// breaking API rewrite out of scope for a routine dependency bump.
+// The MongoDB backend (mongoCache) is a grcache backend for test/dev/CI
+// environments that have a MongoDB instance available but not Redis or
+// memcached — it is not a recommended production alternative to the Redis
+// backend. It uses go.mongodb.org/mongo-driver v1 — the same driver family
+// gourdiantoken depends on, tracked to its latest v1.x release rather than
+// pinned to gourdiantoken's exact version (see docs/architecture.md's
+// "Latest dependency versions" divergence), and reuses gourdiantoken's
+// proven TTL-index convention (see below). The v1 module is
+// upstream-deprecated in favor of go.mongodb.org/mongo-driver/v2, but
+// migrating to that would be a breaking API rewrite out of scope for a
+// routine dependency bump.
 //
 // Unlike Postgres's separate join table, tags live directly as an array
 // field on the same document — Mongo's document model and multikey indexes
@@ -23,7 +24,7 @@
 // monitor runs on an interval (historically ~60s), not instantly, Get/Exists
 // still perform a lazy expiry check client-side as a correctness backstop —
 // the same pattern used by the memory and postgres backends.
-package mongostore
+package grcache
 
 import (
 	"context"
@@ -37,8 +38,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
-
-	"github.com/gourdian25/grcache"
 )
 
 const defaultCollection = "grcache_entries"
@@ -60,11 +59,11 @@ func (d cacheDocument) expired(now time.Time) bool {
 // transactionsEnabled bool) — whose extra positional bool the plan
 // explicitly flagged as an inconsistent shape — grcache owns a single
 // Config struct so every backend constructor has the identical
-// New<Backend>Cache(cfg Config) (grcache.Cache, error) signature.
+// New<Backend>Cache(cfg Config) (Cache, error) signature.
 //
 // Example:
 //
-//	cfg := mongo.MongoConfig{
+//	cfg := grcache.MongoConfig{
 //		URI:      "mongodb://localhost:27017",
 //		Database: "myapp",
 //	}
@@ -82,7 +81,7 @@ type MongoConfig struct {
 
 	// Logger receives optional diagnostic messages (connection failures,
 	// shutdown). A nil Logger disables logging entirely.
-	Logger grcache.Logger
+	Logger Logger
 }
 
 func (cfg MongoConfig) withDefaults() MongoConfig {
@@ -92,11 +91,11 @@ func (cfg MongoConfig) withDefaults() MongoConfig {
 	return cfg
 }
 
-// Cache is a MongoDB-backed implementation of grcache.Cache.
-type Cache struct {
+// mongoCache is a MongoDB-backed implementation of Cache.
+type mongoCache struct {
 	client     *mongo.Client
 	collection *mongo.Collection
-	logger     grcache.Logger
+	logger     Logger
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -106,7 +105,7 @@ type Cache struct {
 	evictions atomic.Uint64
 }
 
-var _ grcache.Cache = (*Cache)(nil)
+var _ Cache = (*mongoCache)(nil)
 
 // NewMongoCache connects to cfg.URI, validates connectivity with Ping,
 // ensures the TTL and tag indexes exist, and returns a ready-to-use Cache.
@@ -115,13 +114,13 @@ var _ grcache.Cache = (*Cache)(nil)
 //   - cfg: MongoConfig — URI and Database are required
 //
 // Returns:
-//   - grcache.Cache: ready to use
+//   - Cache: ready to use
 //   - error: non-nil if URI/Database is empty, the connection/Ping fails
-//     (wrapping grcache.ErrCacheUnavailable), or index creation fails
+//     (wrapping ErrCacheUnavailable), or index creation fails
 //
 // Example:
 //
-//	cache, err := mongo.NewMongoCache(mongo.MongoConfig{
+//	cache, err := grcache.NewMongoCache(grcache.MongoConfig{
 //		URI:      "mongodb://localhost:27017",
 //		Database: "myapp",
 //	})
@@ -129,40 +128,40 @@ var _ grcache.Cache = (*Cache)(nil)
 //		log.Fatal(err)
 //	}
 //	defer cache.Close()
-func NewMongoCache(cfg MongoConfig) (grcache.Cache, error) {
+func NewMongoCache(cfg MongoConfig) (Cache, error) {
 	if cfg.URI == "" {
-		return nil, fmt.Errorf("grcache/mongostore: MongoConfig.URI is required")
+		return nil, fmt.Errorf("grcache/mongo: MongoConfig.URI is required")
 	}
 	if cfg.Database == "" {
-		return nil, fmt.Errorf("grcache/mongostore: MongoConfig.Database is required")
+		return nil, fmt.Errorf("grcache/mongo: MongoConfig.Database is required")
 	}
 	cfg = cfg.withDefaults()
-	logger := grcache.OrNop(cfg.Logger)
+	logger := OrNop(cfg.Logger)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(cfg.URI))
 	if err != nil {
-		logger.Errorf("grcache/mongostore: connect failed: %v", err)
-		return nil, fmt.Errorf("grcache/mongostore: connect: %w", grcache.ErrCacheUnavailable)
+		logger.Errorf("grcache/mongo: connect failed: %v", err)
+		return nil, fmt.Errorf("grcache/mongo: connect: %w", ErrCacheUnavailable)
 	}
 
 	if err := client.Ping(ctx, readpref.Primary()); err != nil {
 		_ = client.Disconnect(ctx)
-		logger.Errorf("grcache/mongostore: ping failed: %v", err)
-		return nil, fmt.Errorf("grcache/mongostore: ping: %w", grcache.ErrCacheUnavailable)
+		logger.Errorf("grcache/mongo: ping failed: %v", err)
+		return nil, fmt.Errorf("grcache/mongo: ping: %w", ErrCacheUnavailable)
 	}
 
 	collection := client.Database(cfg.Database).Collection(cfg.Collection)
 
 	if err := ensureIndexes(ctx, collection); err != nil {
 		_ = client.Disconnect(ctx)
-		return nil, fmt.Errorf("grcache/mongostore: ensure indexes: %w", err)
+		return nil, fmt.Errorf("grcache/mongo: ensure indexes: %w", err)
 	}
 
-	logger.Infof("grcache/mongostore: connected to database %q collection %q", cfg.Database, cfg.Collection)
-	return &Cache{client: client, collection: collection, logger: logger}, nil
+	logger.Infof("grcache/mongo: connected to database %q collection %q", cfg.Database, cfg.Collection)
+	return &mongoCache{client: client, collection: collection, logger: logger}, nil
 }
 
 func ensureIndexes(ctx context.Context, collection *mongo.Collection) error {
@@ -188,9 +187,9 @@ func ensureIndexes(ctx context.Context, collection *mongo.Collection) error {
 	return nil
 }
 
-func (c *Cache) Get(ctx context.Context, key string) ([]byte, error) {
+func (c *mongoCache) Get(ctx context.Context, key string) ([]byte, error) {
 	if c.closed.Load() {
-		return nil, grcache.ErrClosed
+		return nil, ErrClosed
 	}
 
 	var doc cacheDocument
@@ -198,26 +197,26 @@ func (c *Cache) Get(ctx context.Context, key string) ([]byte, error) {
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			c.misses.Add(1)
-			return nil, fmt.Errorf("grcache/mongostore: get %q: %w", key, grcache.ErrKeyNotFound)
+			return nil, fmt.Errorf("grcache/mongo: get %q: %w", key, ErrKeyNotFound)
 		}
-		return nil, fmt.Errorf("grcache/mongostore: get %q: %w", key, grcache.ErrCacheUnavailable)
+		return nil, fmt.Errorf("grcache/mongo: get %q: %w", key, ErrCacheUnavailable)
 	}
 
 	if doc.expired(time.Now()) {
 		c.misses.Add(1)
-		return nil, fmt.Errorf("grcache/mongostore: get %q: %w", key, grcache.ErrKeyNotFound)
+		return nil, fmt.Errorf("grcache/mongo: get %q: %w", key, ErrKeyNotFound)
 	}
 
 	c.hits.Add(1)
 	return doc.Value, nil
 }
 
-func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Duration, tags ...string) error {
+func (c *mongoCache) Set(ctx context.Context, key string, val []byte, ttl time.Duration, tags ...string) error {
 	if c.closed.Load() {
-		return grcache.ErrClosed
+		return ErrClosed
 	}
 	if ttl < 0 {
-		return grcache.ErrInvalidTTL
+		return ErrInvalidTTL
 	}
 
 	doc := cacheDocument{Key: key, Value: val, Tags: tags}
@@ -227,25 +226,25 @@ func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Durati
 
 	_, err := c.collection.ReplaceOne(ctx, bson.M{"_id": key}, doc, options.Replace().SetUpsert(true))
 	if err != nil {
-		return fmt.Errorf("grcache/mongostore: set %q: %w", key, grcache.ErrCacheUnavailable)
+		return fmt.Errorf("grcache/mongo: set %q: %w", key, ErrCacheUnavailable)
 	}
 	return nil
 }
 
-func (c *Cache) Delete(ctx context.Context, key string) error {
+func (c *mongoCache) Delete(ctx context.Context, key string) error {
 	if c.closed.Load() {
-		return grcache.ErrClosed
+		return ErrClosed
 	}
 
 	if _, err := c.collection.DeleteOne(ctx, bson.M{"_id": key}); err != nil {
-		return fmt.Errorf("grcache/mongostore: delete %q: %w", key, grcache.ErrCacheUnavailable)
+		return fmt.Errorf("grcache/mongo: delete %q: %w", key, ErrCacheUnavailable)
 	}
 	return nil
 }
 
-func (c *Cache) Exists(ctx context.Context, key string) (bool, error) {
+func (c *mongoCache) Exists(ctx context.Context, key string) (bool, error) {
 	if c.closed.Load() {
-		return false, grcache.ErrClosed
+		return false, ErrClosed
 	}
 
 	var doc cacheDocument
@@ -254,7 +253,7 @@ func (c *Cache) Exists(ctx context.Context, key string) (bool, error) {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return false, nil
 		}
-		return false, fmt.Errorf("grcache/mongostore: exists %q: %w", key, grcache.ErrCacheUnavailable)
+		return false, fmt.Errorf("grcache/mongo: exists %q: %w", key, ErrCacheUnavailable)
 	}
 
 	if doc.expired(time.Now()) {
@@ -263,29 +262,29 @@ func (c *Cache) Exists(ctx context.Context, key string) (bool, error) {
 	return true, nil
 }
 
-func (c *Cache) InvalidateTag(ctx context.Context, tag string) (int, error) {
+func (c *mongoCache) InvalidateTag(ctx context.Context, tag string) (int, error) {
 	if c.closed.Load() {
-		return 0, grcache.ErrClosed
+		return 0, ErrClosed
 	}
 
 	result, err := c.collection.DeleteMany(ctx, bson.M{"tags": tag})
 	if err != nil {
-		return 0, fmt.Errorf("grcache/mongostore: invalidate tag %q: %w", tag, grcache.ErrCacheUnavailable)
+		return 0, fmt.Errorf("grcache/mongo: invalidate tag %q: %w", tag, ErrCacheUnavailable)
 	}
 	return int(result.DeletedCount), nil
 }
 
-func (c *Cache) Stats(ctx context.Context) (grcache.Stats, error) {
+func (c *mongoCache) Stats(ctx context.Context) (Stats, error) {
 	if c.closed.Load() {
-		return grcache.Stats{}, grcache.ErrClosed
+		return Stats{}, ErrClosed
 	}
 
 	keyCount, err := c.collection.EstimatedDocumentCount(ctx)
 	if err != nil {
-		return grcache.Stats{}, fmt.Errorf("grcache/mongostore: stats: %w", grcache.ErrCacheUnavailable)
+		return Stats{}, fmt.Errorf("grcache/mongo: stats: %w", ErrCacheUnavailable)
 	}
 
-	return grcache.Stats{
+	return Stats{
 		Hits:      c.hits.Load(),
 		Misses:    c.misses.Load(),
 		Evictions: c.evictions.Load(),
@@ -293,14 +292,14 @@ func (c *Cache) Stats(ctx context.Context) (grcache.Stats, error) {
 	}, nil
 }
 
-func (c *Cache) Close() error {
+func (c *mongoCache) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		err = c.client.Disconnect(ctx)
-		c.logger.Infof("grcache/mongostore: cache closed")
+		c.logger.Infof("grcache/mongo: cache closed")
 	})
 	return err
 }

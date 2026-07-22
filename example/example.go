@@ -23,11 +23,6 @@ import (
 	"github.com/gourdian25/grlog"
 
 	"github.com/gourdian25/grcache"
-	"github.com/gourdian25/grcache/memcached"
-	"github.com/gourdian25/grcache/memory"
-	"github.com/gourdian25/grcache/mongostore"
-	"github.com/gourdian25/grcache/postgres"
-	"github.com/gourdian25/grcache/redis"
 )
 
 func main() {
@@ -50,7 +45,7 @@ func main() {
 // working Cache, so the same behavior is demonstrated identically
 // regardless of which backend produced it.
 func walkthrough(ctx context.Context, name string, cache grcache.Cache) {
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	key := "user:42"
 	val := []byte("alice")
@@ -93,7 +88,7 @@ func walkthrough(ctx context.Context, name string, cache grcache.Cache) {
 
 func demoMemory(ctx context.Context) {
 	fmt.Println("\n--- memory (always available, zero dependencies) ---")
-	cache, err := memory.NewMemoryCache()
+	cache, err := grcache.NewMemoryCache()
 	if err != nil {
 		fmt.Printf("skipping memory: %v\n", err)
 		return
@@ -106,9 +101,9 @@ func demoMemory(ctx context.Context) {
 func demoMemoryWithLogging(ctx context.Context) {
 	fmt.Println("\n--- memory with grlog logging ---")
 	logger := grlog.NewDefaultLogger()
-	cache, err := memory.NewMemoryCache(
-		memory.WithLogger(logger),
-		memory.WithSweepInterval(5*time.Second),
+	cache, err := grcache.NewMemoryCache(
+		grcache.WithLogger(logger),
+		grcache.WithSweepInterval(5*time.Second),
 	)
 	if err != nil {
 		fmt.Printf("skipping memory-with-logging: %v\n", err)
@@ -119,7 +114,7 @@ func demoMemoryWithLogging(ctx context.Context) {
 
 func demoRedis(ctx context.Context) {
 	fmt.Println("\n--- redis ---")
-	cache, err := redis.NewRedisCache(redis.RedisConfig{
+	cache, err := grcache.NewRedisCache(grcache.RedisConfig{
 		Addr:     "localhost:6379",
 		Password: "redis_password",
 		DB:       14,
@@ -133,7 +128,7 @@ func demoRedis(ctx context.Context) {
 
 func demoMemcached(ctx context.Context) {
 	fmt.Println("\n--- memcached ---")
-	cache, err := memcached.NewMemcachedCache(memcached.MemcachedConfig{
+	cache, err := grcache.NewMemcachedCache(grcache.MemcachedConfig{
 		Servers: []string{"localhost:11211"},
 	})
 	if err != nil {
@@ -145,7 +140,7 @@ func demoMemcached(ctx context.Context) {
 
 func demoPostgres(ctx context.Context) {
 	fmt.Println("\n--- postgres ---")
-	cache, err := postgres.NewPostgresCache(postgres.PostgresConfig{
+	cache, err := grcache.NewPostgresCache(grcache.PostgresConfig{
 		DSN: "host=localhost user=postgres_user password=postgres_password dbname=grcache_test port=5432 sslmode=disable",
 	})
 	if err != nil {
@@ -157,7 +152,7 @@ func demoPostgres(ctx context.Context) {
 
 func demoMongo(ctx context.Context) {
 	fmt.Println("\n--- mongo ---")
-	cache, err := mongostore.NewMongoCache(mongostore.MongoConfig{
+	cache, err := grcache.NewMongoCache(grcache.MongoConfig{
 		URI:      "mongodb://root:mongo_password@localhost:27018/?directConnection=true",
 		Database: "grcache_test",
 	})

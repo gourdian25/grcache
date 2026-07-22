@@ -1,8 +1,9 @@
-// File: memcached/memcached.go
+// File: memcached.go
 
-// Package memcached is grcache's secondary, lower-priority backend (behind
-// Redis). It uses github.com/bradfitz/gomemcache/memcache, the de facto
-// minimal Go memcached client.
+// The memcached backend (memcachedCache) is grcache's secondary,
+// lower-priority backend (behind Redis). It uses
+// github.com/bradfitz/gomemcache/memcache, the de facto minimal Go
+// memcached client.
 //
 // Tag invalidation is emulated on top of memcached's flat key-value model:
 // each tag is itself a memcached key holding a newline-delimited list of
@@ -14,7 +15,7 @@
 // up by a later InvalidateTag call for that tag; it is not a correctness bug
 // for Get/Set/Delete/Exists on the key itself, only for the invalidation
 // guarantee.
-package memcached
+package grcache
 
 import (
 	"context"
@@ -25,11 +26,19 @@ import (
 	"time"
 
 	"github.com/bradfitz/gomemcache/memcache"
-
-	"github.com/gourdian25/grcache"
 )
 
 const (
+	// memcachedValuePrefix namespaces cache-value keys, mirroring the
+	// Redis backend's own valuePrefix convention — previously this backend
+	// stored cache values under the bare, unprefixed key while only its
+	// tag-list keys were namespaced, a real gap (a cache value and a
+	// same-named tag list could never collide in practice since Set always
+	// writes both under different derived keys, but the value key itself
+	// offered no defense-in-depth against an application key that happened
+	// to collide with some other memcached user of the same server/pool).
+	memcachedValuePrefix = "grcache:val:"
+
 	tagKeyPrefix = "grcache:tag:"
 
 	// relativeExpirationLimit is memcached's own cutoff: expirations at or
@@ -42,7 +51,7 @@ const (
 //
 // Example:
 //
-//	cfg := memcached.MemcachedConfig{Servers: []string{"localhost:11211"}}
+//	cfg := grcache.MemcachedConfig{Servers: []string{"localhost:11211"}}
 type MemcachedConfig struct {
 	// Servers is the list of memcached server addresses. Required, e.g.
 	// []string{"localhost:11211"}. Multiple servers are load-balanced by
@@ -59,13 +68,13 @@ type MemcachedConfig struct {
 
 	// Logger receives optional diagnostic messages (connection failures,
 	// shutdown). A nil Logger disables logging entirely.
-	Logger grcache.Logger
+	Logger Logger
 }
 
-// Cache is a memcached-backed implementation of grcache.Cache.
-type Cache struct {
+// Cache is a memcached-backed implementation of Cache.
+type memcachedCache struct {
 	client *memcache.Client
-	logger grcache.Logger
+	logger Logger
 
 	closed    atomic.Bool
 	closeOnce sync.Once
@@ -75,7 +84,7 @@ type Cache struct {
 	evictions atomic.Uint64
 }
 
-var _ grcache.Cache = (*Cache)(nil)
+var _ Cache = (*memcachedCache)(nil)
 
 // NewMemcachedCache builds a *memcache.Client from cfg and validates
 // connectivity with Ping before returning.
@@ -84,24 +93,24 @@ var _ grcache.Cache = (*Cache)(nil)
 //   - cfg: MemcachedConfig — Servers is required
 //
 // Returns:
-//   - grcache.Cache: ready to use
+//   - Cache: ready to use
 //   - error: non-nil if Servers is empty or Ping fails, wrapping
-//     grcache.ErrCacheUnavailable in the latter case
+//     ErrCacheUnavailable in the latter case
 //
 // Example:
 //
-//	cache, err := memcached.NewMemcachedCache(memcached.MemcachedConfig{
+//	cache, err := grcache.NewMemcachedCache(grcache.MemcachedConfig{
 //		Servers: []string{"localhost:11211"},
 //	})
 //	if err != nil {
 //		log.Fatal(err)
 //	}
 //	defer cache.Close()
-func NewMemcachedCache(cfg MemcachedConfig) (grcache.Cache, error) {
+func NewMemcachedCache(cfg MemcachedConfig) (Cache, error) {
 	if len(cfg.Servers) == 0 {
 		return nil, fmt.Errorf("grcache/memcached: MemcachedConfig.Servers is required")
 	}
-	logger := grcache.OrNop(cfg.Logger)
+	logger := OrNop(cfg.Logger)
 
 	client := memcache.New(cfg.Servers...)
 	if cfg.Timeout > 0 {
@@ -113,14 +122,15 @@ func NewMemcachedCache(cfg MemcachedConfig) (grcache.Cache, error) {
 
 	if err := client.Ping(); err != nil {
 		logger.Errorf("grcache/memcached: connect %v failed: %v", cfg.Servers, err)
-		return nil, fmt.Errorf("grcache/memcached: connect %v: %w", cfg.Servers, grcache.ErrCacheUnavailable)
+		return nil, fmt.Errorf("grcache/memcached: connect %v: %w", cfg.Servers, ErrCacheUnavailable)
 	}
 
 	logger.Infof("grcache/memcached: connected to %v", cfg.Servers)
-	return &Cache{client: client, logger: logger}, nil
+	return &memcachedCache{client: client, logger: logger}, nil
 }
 
-func tagListKey(tag string) string { return tagKeyPrefix + tag }
+func memcachedValueKey(key string) string { return memcachedValuePrefix + key }
+func tagListKey(tag string) string        { return tagKeyPrefix + tag }
 
 // expirationSeconds converts a ttl into memcached's Expiration convention:
 // 0 means no expiry, values up to 30 days are relative, longer ttls are
@@ -143,39 +153,39 @@ func expirationSeconds(ttl time.Duration) int32 {
 	return int32(time.Now().Add(ttl).Unix())
 }
 
-func (c *Cache) Get(ctx context.Context, key string) ([]byte, error) {
+func (c *memcachedCache) Get(ctx context.Context, key string) ([]byte, error) {
 	if c.closed.Load() {
-		return nil, grcache.ErrClosed
+		return nil, ErrClosed
 	}
 
-	item, err := c.client.Get(key)
+	item, err := c.client.Get(memcachedValueKey(key))
 	if err != nil {
 		if err == memcache.ErrCacheMiss {
 			c.misses.Add(1)
-			return nil, fmt.Errorf("grcache/memcached: get %q: %w", key, grcache.ErrKeyNotFound)
+			return nil, fmt.Errorf("grcache/memcached: get %q: %w", key, ErrKeyNotFound)
 		}
-		return nil, fmt.Errorf("grcache/memcached: get %q: %w", key, grcache.ErrCacheUnavailable)
+		return nil, fmt.Errorf("grcache/memcached: get %q: %w", key, ErrCacheUnavailable)
 	}
 	c.hits.Add(1)
 	return item.Value, nil
 }
 
-func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Duration, tags ...string) error {
+func (c *memcachedCache) Set(ctx context.Context, key string, val []byte, ttl time.Duration, tags ...string) error {
 	if c.closed.Load() {
-		return grcache.ErrClosed
+		return ErrClosed
 	}
 	if ttl < 0 {
-		return grcache.ErrInvalidTTL
+		return ErrInvalidTTL
 	}
 
-	item := &memcache.Item{Key: key, Value: val, Expiration: expirationSeconds(ttl)}
+	item := &memcache.Item{Key: memcachedValueKey(key), Value: val, Expiration: expirationSeconds(ttl)}
 	if err := c.client.Set(item); err != nil {
-		return fmt.Errorf("grcache/memcached: set %q: %w", key, grcache.ErrCacheUnavailable)
+		return fmt.Errorf("grcache/memcached: set %q: %w", key, ErrCacheUnavailable)
 	}
 
 	for _, tag := range tags {
 		if err := c.addToTagList(tag, key); err != nil {
-			return fmt.Errorf("grcache/memcached: set %q tag %q: %w", key, tag, grcache.ErrCacheUnavailable)
+			return fmt.Errorf("grcache/memcached: set %q tag %q: %w", key, tag, ErrCacheUnavailable)
 		}
 	}
 
@@ -184,7 +194,7 @@ func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Durati
 
 // addToTagList performs a best-effort read-modify-write of the tag's member
 // list. Concurrent calls for the same tag can race; see the package doc.
-func (c *Cache) addToTagList(tag, key string) error {
+func (c *memcachedCache) addToTagList(tag, key string) error {
 	members, err := c.readTagList(tag)
 	if err != nil {
 		return err
@@ -198,7 +208,7 @@ func (c *Cache) addToTagList(tag, key string) error {
 	return c.writeTagList(tag, members)
 }
 
-func (c *Cache) readTagList(tag string) ([]string, error) {
+func (c *memcachedCache) readTagList(tag string) ([]string, error) {
 	item, err := c.client.Get(tagListKey(tag))
 	if err != nil {
 		if err == memcache.ErrCacheMiss {
@@ -212,7 +222,7 @@ func (c *Cache) readTagList(tag string) ([]string, error) {
 	return strings.Split(string(item.Value), "\n"), nil
 }
 
-func (c *Cache) writeTagList(tag string, members []string) error {
+func (c *memcachedCache) writeTagList(tag string, members []string) error {
 	if len(members) == 0 {
 		return c.client.Delete(tagListKey(tag))
 	}
@@ -220,64 +230,64 @@ func (c *Cache) writeTagList(tag string, members []string) error {
 	return c.client.Set(item)
 }
 
-func (c *Cache) Delete(ctx context.Context, key string) error {
+func (c *memcachedCache) Delete(ctx context.Context, key string) error {
 	if c.closed.Load() {
-		return grcache.ErrClosed
+		return ErrClosed
 	}
 
-	err := c.client.Delete(key)
+	err := c.client.Delete(memcachedValueKey(key))
 	if err != nil && err != memcache.ErrCacheMiss {
-		return fmt.Errorf("grcache/memcached: delete %q: %w", key, grcache.ErrCacheUnavailable)
+		return fmt.Errorf("grcache/memcached: delete %q: %w", key, ErrCacheUnavailable)
 	}
 	return nil
 }
 
-func (c *Cache) Exists(ctx context.Context, key string) (bool, error) {
+func (c *memcachedCache) Exists(ctx context.Context, key string) (bool, error) {
 	if c.closed.Load() {
-		return false, grcache.ErrClosed
+		return false, ErrClosed
 	}
 
-	_, err := c.client.Get(key)
+	_, err := c.client.Get(memcachedValueKey(key))
 	if err != nil {
 		if err == memcache.ErrCacheMiss {
 			return false, nil
 		}
-		return false, fmt.Errorf("grcache/memcached: exists %q: %w", key, grcache.ErrCacheUnavailable)
+		return false, fmt.Errorf("grcache/memcached: exists %q: %w", key, ErrCacheUnavailable)
 	}
 	return true, nil
 }
 
-func (c *Cache) InvalidateTag(ctx context.Context, tag string) (int, error) {
+func (c *memcachedCache) InvalidateTag(ctx context.Context, tag string) (int, error) {
 	if c.closed.Load() {
-		return 0, grcache.ErrClosed
+		return 0, ErrClosed
 	}
 
 	members, err := c.readTagList(tag)
 	if err != nil {
-		return 0, fmt.Errorf("grcache/memcached: invalidate tag %q: %w", tag, grcache.ErrCacheUnavailable)
+		return 0, fmt.Errorf("grcache/memcached: invalidate tag %q: %w", tag, ErrCacheUnavailable)
 	}
 	if len(members) == 0 {
 		return 0, nil
 	}
 
 	for _, member := range members {
-		if err := c.client.Delete(member); err != nil && err != memcache.ErrCacheMiss {
-			return 0, fmt.Errorf("grcache/memcached: invalidate tag %q: %w", tag, grcache.ErrCacheUnavailable)
+		if err := c.client.Delete(memcachedValueKey(member)); err != nil && err != memcache.ErrCacheMiss {
+			return 0, fmt.Errorf("grcache/memcached: invalidate tag %q: %w", tag, ErrCacheUnavailable)
 		}
 	}
 	if err := c.client.Delete(tagListKey(tag)); err != nil && err != memcache.ErrCacheMiss {
-		return 0, fmt.Errorf("grcache/memcached: invalidate tag %q: %w", tag, grcache.ErrCacheUnavailable)
+		return 0, fmt.Errorf("grcache/memcached: invalidate tag %q: %w", tag, ErrCacheUnavailable)
 	}
 
 	return len(members), nil
 }
 
-func (c *Cache) Stats(ctx context.Context) (grcache.Stats, error) {
+func (c *memcachedCache) Stats(ctx context.Context) (Stats, error) {
 	if c.closed.Load() {
-		return grcache.Stats{}, grcache.ErrClosed
+		return Stats{}, ErrClosed
 	}
 
-	return grcache.Stats{
+	return Stats{
 		Hits:      c.hits.Load(),
 		Misses:    c.misses.Load(),
 		Evictions: c.evictions.Load(),
@@ -285,7 +295,7 @@ func (c *Cache) Stats(ctx context.Context) (grcache.Stats, error) {
 	}, nil
 }
 
-func (c *Cache) Close() error {
+func (c *memcachedCache) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)

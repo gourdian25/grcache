@@ -1,19 +1,17 @@
-// File: memory/memory.go
+// File: memory.go
 
-// Package memory is grcache's default, zero-external-dependency backend. It
-// stores entries in a single mutex-protected map with a background sweep
-// goroutine for TTL expiry, and is intended for local development, testing,
-// and single-process use — it does not coordinate state across processes or
-// replicas.
-package memory
+// The memory backend (memoryCache) is grcache's default,
+// zero-external-dependency backend. It stores entries in a single
+// mutex-protected map with a background sweep goroutine for TTL expiry, and
+// is intended for local development, testing, and single-process use — it
+// does not coordinate state across processes or replicas.
+package grcache
 
 import (
 	"context"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/gourdian25/grcache"
 )
 
 const defaultSweepInterval = 30 * time.Second
@@ -29,8 +27,8 @@ func (e entry) expired(now time.Time) bool {
 	return !e.expiresAt.IsZero() && !now.Before(e.expiresAt)
 }
 
-// Option configures a Cache constructed by NewMemoryCache.
-type Option func(*Cache)
+// MemoryOption configures a Cache constructed by NewMemoryCache.
+type MemoryOption func(*memoryCache)
 
 // WithSweepInterval sets how often the background goroutine sweeps expired
 // entries. The default is 30 seconds. Sweeping is a memory-reclamation
@@ -42,44 +40,44 @@ type Option func(*Cache)
 //
 // Example:
 //
-//	cache, err := memory.NewMemoryCache(memory.WithSweepInterval(5 * time.Second))
-func WithSweepInterval(d time.Duration) Option {
-	return func(c *Cache) {
+//	cache, err := grcache.NewMemoryCache(grcache.WithSweepInterval(5 * time.Second))
+func WithSweepInterval(d time.Duration) MemoryOption {
+	return func(c *memoryCache) {
 		if d > 0 {
 			c.sweepInterval = d
 		}
 	}
 }
 
-// WithLogger installs an optional grcache.Logger for diagnostic messages
+// WithLogger installs an optional Logger for diagnostic messages
 // (sweep-cycle summaries, shutdown). Logging is always opt-in; without this
 // option the cache logs nothing.
 //
 // Parameters:
-//   - l: grcache.Logger — a nil value is equivalent to omitting this option
+//   - l: Logger — a nil value is equivalent to omitting this option
 //
 // Example:
 //
-//	cache, err := memory.NewMemoryCache(memory.WithLogger(grlog.NewDefaultLogger()))
-func WithLogger(l grcache.Logger) Option {
-	return func(c *Cache) {
-		c.logger = grcache.OrNop(l)
+//	cache, err := grcache.NewMemoryCache(grcache.WithLogger(grlog.NewDefaultLogger()))
+func WithLogger(l Logger) MemoryOption {
+	return func(c *memoryCache) {
+		c.logger = OrNop(l)
 	}
 }
 
-// Cache is an in-memory implementation of grcache.Cache. It has zero
+// memoryCache is an in-memory implementation of Cache. It has zero
 // external dependencies and does not coordinate state across processes or
 // replicas — running it behind multiple instances of an application means
 // each instance has its own independent cache that will diverge from the
-// others, which is expected, not a bug. Use grcache/redis, grcache/postgres,
-// or grcache/mongo for state that must be shared.
-type Cache struct {
+// others, which is expected, not a bug. Use NewRedisCache, NewPostgresCache,
+// or NewMongoCache for state that must be shared.
+type memoryCache struct {
 	mu   sync.RWMutex
 	data map[string]entry
 	tags map[string]map[string]struct{} // tag -> set of keys
 
 	sweepInterval time.Duration
-	logger        grcache.Logger
+	logger        Logger
 	closed        atomic.Bool
 	closeChan     chan struct{}
 	wg            sync.WaitGroup
@@ -89,32 +87,32 @@ type Cache struct {
 	evictions atomic.Uint64
 }
 
-var _ grcache.Cache = (*Cache)(nil)
+var _ Cache = (*memoryCache)(nil)
 
 // NewMemoryCache constructs a ready-to-use in-memory Cache. Construction
 // never fails — the error return exists only to match the signature every
 // other backend's constructor uses.
 //
 // Parameters:
-//   - opts: ...Option — WithSweepInterval and/or WithLogger; both optional
+//   - opts: ...MemoryOption — WithSweepInterval and/or WithLogger; both optional
 //
 // Returns:
-//   - grcache.Cache: ready to use immediately
+//   - Cache: ready to use immediately
 //   - error: always nil
 //
 // Example:
 //
-//	cache, err := memory.NewMemoryCache()
+//	cache, err := grcache.NewMemoryCache()
 //	if err != nil {
 //		log.Fatal(err)
 //	}
 //	defer cache.Close()
-func NewMemoryCache(opts ...Option) (grcache.Cache, error) {
-	c := &Cache{
+func NewMemoryCache(opts ...MemoryOption) (Cache, error) {
+	c := &memoryCache{
 		data:          make(map[string]entry),
 		tags:          make(map[string]map[string]struct{}),
 		sweepInterval: defaultSweepInterval,
-		logger:        grcache.NopLogger(),
+		logger:        NopLogger(),
 		closeChan:     make(chan struct{}),
 	}
 	for _, opt := range opts {
@@ -129,7 +127,7 @@ func NewMemoryCache(opts ...Option) (grcache.Cache, error) {
 	return c, nil
 }
 
-func (c *Cache) sweepLoop() {
+func (c *memoryCache) sweepLoop() {
 	defer c.wg.Done()
 
 	ticker := time.NewTicker(c.sweepInterval)
@@ -145,7 +143,7 @@ func (c *Cache) sweepLoop() {
 	}
 }
 
-func (c *Cache) sweep() {
+func (c *memoryCache) sweep() {
 	now := time.Now()
 
 	c.mu.Lock()
@@ -166,7 +164,7 @@ func (c *Cache) sweep() {
 
 // removeLocked deletes key from data and from every tag set it belongs to.
 // Callers must hold c.mu for writing.
-func (c *Cache) removeLocked(key string, e entry) {
+func (c *memoryCache) removeLocked(key string, e entry) {
 	delete(c.data, key)
 	for _, tag := range e.tags {
 		if members, ok := c.tags[tag]; ok {
@@ -178,9 +176,9 @@ func (c *Cache) removeLocked(key string, e entry) {
 	}
 }
 
-func (c *Cache) Get(ctx context.Context, key string) ([]byte, error) {
+func (c *memoryCache) Get(ctx context.Context, key string) ([]byte, error) {
 	if c.closed.Load() {
-		return nil, grcache.ErrClosed
+		return nil, ErrClosed
 	}
 
 	c.mu.RLock()
@@ -189,7 +187,7 @@ func (c *Cache) Get(ctx context.Context, key string) ([]byte, error) {
 
 	if !ok || e.expired(time.Now()) {
 		c.misses.Add(1)
-		return nil, grcache.ErrKeyNotFound
+		return nil, ErrKeyNotFound
 	}
 
 	c.hits.Add(1)
@@ -198,12 +196,12 @@ func (c *Cache) Get(ctx context.Context, key string) ([]byte, error) {
 	return out, nil
 }
 
-func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Duration, tags ...string) error {
+func (c *memoryCache) Set(ctx context.Context, key string, val []byte, ttl time.Duration, tags ...string) error {
 	if c.closed.Load() {
-		return grcache.ErrClosed
+		return ErrClosed
 	}
 	if ttl < 0 {
-		return grcache.ErrInvalidTTL
+		return ErrInvalidTTL
 	}
 
 	var expiresAt time.Time
@@ -240,9 +238,9 @@ func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Durati
 	return nil
 }
 
-func (c *Cache) Delete(ctx context.Context, key string) error {
+func (c *memoryCache) Delete(ctx context.Context, key string) error {
 	if c.closed.Load() {
-		return grcache.ErrClosed
+		return ErrClosed
 	}
 
 	c.mu.Lock()
@@ -254,9 +252,9 @@ func (c *Cache) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-func (c *Cache) Exists(ctx context.Context, key string) (bool, error) {
+func (c *memoryCache) Exists(ctx context.Context, key string) (bool, error) {
 	if c.closed.Load() {
-		return false, grcache.ErrClosed
+		return false, ErrClosed
 	}
 
 	c.mu.RLock()
@@ -269,9 +267,9 @@ func (c *Cache) Exists(ctx context.Context, key string) (bool, error) {
 	return true, nil
 }
 
-func (c *Cache) InvalidateTag(ctx context.Context, tag string) (int, error) {
+func (c *memoryCache) InvalidateTag(ctx context.Context, tag string) (int, error) {
 	if c.closed.Load() {
-		return 0, grcache.ErrClosed
+		return 0, ErrClosed
 	}
 
 	c.mu.Lock()
@@ -306,16 +304,16 @@ func (c *Cache) InvalidateTag(ctx context.Context, tag string) (int, error) {
 	return n, nil
 }
 
-func (c *Cache) Stats(ctx context.Context) (grcache.Stats, error) {
+func (c *memoryCache) Stats(ctx context.Context) (Stats, error) {
 	if c.closed.Load() {
-		return grcache.Stats{}, grcache.ErrClosed
+		return Stats{}, ErrClosed
 	}
 
 	c.mu.RLock()
 	keyCount := int64(len(c.data))
 	c.mu.RUnlock()
 
-	return grcache.Stats{
+	return Stats{
 		Hits:      c.hits.Load(),
 		Misses:    c.misses.Load(),
 		Evictions: c.evictions.Load(),
@@ -323,7 +321,7 @@ func (c *Cache) Stats(ctx context.Context) (grcache.Stats, error) {
 	}, nil
 }
 
-func (c *Cache) Close() error {
+func (c *memoryCache) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
 	}

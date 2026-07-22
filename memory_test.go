@@ -1,47 +1,23 @@
-// File: memory/memory_test.go
+// File: memory_test.go
 
-package memory_test
+package grcache_test
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gourdian25/grcache"
-	"github.com/gourdian25/grcache/conformance"
-	"github.com/gourdian25/grcache/memory"
 )
 
-func newCache() (grcache.Cache, error) {
-	return memory.NewMemoryCache()
-}
-
-func TestConformance(t *testing.T) {
-	conformance.Run(t, newCache)
-}
-
-func TestInvalidTTL(t *testing.T) {
+func TestMemorySweepReclaimsExpiredEntries(t *testing.T) {
 	ctx := context.Background()
-	cache, err := memory.NewMemoryCache()
+	cache, err := grcache.NewMemoryCache(grcache.WithSweepInterval(30 * time.Millisecond))
 	if err != nil {
 		t.Fatalf("NewMemoryCache: %v", err)
 	}
-	defer cache.Close()
-
-	if err := cache.Set(ctx, "k", []byte("v"), -time.Second); !errors.Is(err, grcache.ErrInvalidTTL) {
-		t.Fatalf("Set with negative ttl error = %v, want ErrInvalidTTL", err)
-	}
-}
-
-func TestSweepReclaimsExpiredEntries(t *testing.T) {
-	ctx := context.Background()
-	cache, err := memory.NewMemoryCache(memory.WithSweepInterval(30 * time.Millisecond))
-	if err != nil {
-		t.Fatalf("NewMemoryCache: %v", err)
-	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	if err := cache.Set(ctx, "sweep-me", []byte("v"), 10*time.Millisecond); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -62,9 +38,9 @@ func TestSweepReclaimsExpiredEntries(t *testing.T) {
 	t.Fatal("sweep did not reclaim expired entry within deadline")
 }
 
-func TestWithLogger(t *testing.T) {
-	logger := &conformance.RecordingLogger{}
-	cache, err := memory.NewMemoryCache(memory.WithSweepInterval(20*time.Millisecond), memory.WithLogger(logger))
+func TestMemoryWithLogger(t *testing.T) {
+	logger := &recordingLogger{}
+	cache, err := grcache.NewMemoryCache(grcache.WithSweepInterval(20*time.Millisecond), grcache.WithLogger(logger))
 	if err != nil {
 		t.Fatalf("NewMemoryCache: %v", err)
 	}
@@ -75,7 +51,7 @@ func TestWithLogger(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && logger.Total() == 0 {
+	for time.Now().Before(deadline) && logger.total() == 0 {
 		time.Sleep(20 * time.Millisecond)
 	}
 
@@ -83,13 +59,13 @@ func TestWithLogger(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	if logger.Total() == 0 {
+	if logger.total() == 0 {
 		t.Fatal("WithLogger: no messages were logged, want at least one (sweep and/or close)")
 	}
 }
 
-func TestConcurrentCloseIsSafe(t *testing.T) {
-	cache, err := memory.NewMemoryCache()
+func TestMemoryConcurrentCloseIsSafe(t *testing.T) {
+	cache, err := grcache.NewMemoryCache()
 	if err != nil {
 		t.Fatalf("NewMemoryCache: %v", err)
 	}

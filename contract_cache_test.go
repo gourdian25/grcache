@@ -1,17 +1,19 @@
-// File: conformance/conformance.go
+// File: contract_cache_test.go
 
-// Package conformance is a shared behavioral test suite run against every
-// grcache backend via the common Cache interface. It enforces identical
-// behavior across backends for every scenario it covers (see Run) and is
-// the primary test artifact for each backend package, which supplies its
-// own constructor to Run and adds backend-specific tests (e.g.
-// connection-failure handling) separately. It is not an exhaustive proof
-// of parity — new scenarios get added here as gaps are found.
-//
-// This package imports only the root grcache package, never a backend
-// subpackage — each backend's own test file imports conformance sideways,
-// which is what avoids an import cycle in the subpackage-per-backend layout.
-package conformance
+// contract_cache_test.go is the shared behavioral test suite run against
+// every grcache backend via the common Cache interface, enforcing identical
+// behavior across backends for every scenario it covers (see
+// runCacheContract, run via TestCache_Contract's per-backend subtests). It
+// is not an exhaustive proof of parity — new scenarios get added here as
+// gaps are found. This was originally a separate, publicly-importable
+// conformance package but has been folded into the root package's own
+// tests for consistency with the rest of the gourdian ecosystem's
+// convention (see grnoti's own contract_*_test.go files) — unlike
+// grevents/grpolicy's own conformance packages (which existed without a
+// real backend-parity need), grcache's suite genuinely proves parity across
+// five backend implementations, so it's driven here via one subtest per
+// backend rather than collapsing into a single flat test.
+package grcache_test
 
 import (
 	"context"
@@ -24,88 +26,56 @@ import (
 	"github.com/gourdian25/grcache"
 )
 
-// PopulateTagged sets n keys, all tagged with tag, using a shared key prefix
-// so callers can identify them. It is intended for benchmark setup (e.g.
-// measuring InvalidateTag at 10/1k/100k-key cardinality) so the population
-// step isn't duplicated across every backend's benchmark file.
-//
-// Parameters:
-//   - ctx: context.Context
-//   - cache: grcache.Cache — the backend under test
-//   - tag: string — every populated key is tagged with this one tag
-//   - n: int — how many keys to populate
-//
-// Returns:
-//   - error: the first Set failure encountered, if any
-//
-// Example:
-//
-//	if err := conformance.PopulateTagged(ctx, cache, "bench-tag", 1000); err != nil {
-//		b.Fatal(err)
-//	}
-//	n, err := cache.InvalidateTag(ctx, "bench-tag") // n == 1000
-func PopulateTagged(ctx context.Context, cache grcache.Cache, tag string, n int) error {
+// populateTagged sets n keys, all tagged with tag, using a shared key
+// prefix so callers can identify them. Used by cache_bench_test.go to
+// populate InvalidateTag benchmarks at a given tag cardinality.
+func populateTagged(ctx context.Context, cache grcache.Cache, tag string, n int) error {
 	val := []byte("benchmark-value")
 	for i := 0; i < n; i++ {
 		key := fmt.Sprintf("%s-key-%d", tag, i)
 		if err := cache.Set(ctx, key, val, time.Hour, tag); err != nil {
-			return fmt.Errorf("PopulateTagged: set %s: %w", key, err)
+			return fmt.Errorf("populateTagged: set %s: %w", key, err)
 		}
 	}
 	return nil
 }
 
-// RunOption configures Run's behavior for scenarios where backends have
-// documented, non-uniform guarantees. The zero value (no options) is the
-// strictest behavior; options only ever relax specific assertions for a
-// specific, documented reason — they never relax the default for every
-// backend.
-type RunOption func(*runConfig)
-
-type runConfig struct {
+// cacheContractConfig configures runCacheContract's behavior for scenarios
+// where backends have documented, non-uniform guarantees. The zero value
+// (no options) is the strictest behavior; options only ever relax specific
+// assertions for a specific, documented reason — they never relax the
+// default for every backend.
+type cacheContractConfig struct {
 	bestEffortTagConcurrency bool
 }
 
-// WithBestEffortTagConcurrency relaxes the ConcurrentTagSet scenario's
+type cacheContractOption func(*cacheContractConfig)
+
+// withBestEffortTagConcurrency relaxes the ConcurrentTagSet scenario's
 // assertion from "exactly N keys invalidated" to "at least one key
 // invalidated, and never more than N" — for backends whose tag storage is
 // documented as best-effort/eventually-consistent under concurrent writes
-// (currently only grcache/memcached; see its package doc comment and
-// TestTagListRaceIsDocumentedNotFixed). Backends with a real transactional
-// or atomic tag-index write path (memory, redis, postgres, mongo) must not
-// use this option — they are expected to meet the strict guarantee.
-func WithBestEffortTagConcurrency() RunOption {
-	return func(cfg *runConfig) { cfg.bestEffortTagConcurrency = true }
+// (currently only the memcached backend; see memcached.go's package doc
+// and TestTagListRaceIsDocumentedNotFixed). Backends with a real
+// transactional or atomic tag-index write path (memory, redis, postgres,
+// mongo) must not use this option — they are expected to meet the strict
+// guarantee.
+func withBestEffortTagConcurrency() cacheContractOption {
+	return func(cfg *cacheContractConfig) { cfg.bestEffortTagConcurrency = true }
 }
 
-// Run executes the full conformance suite against a fresh Cache instance
-// obtained from newCache for each scenario. Every backend's own test file
-// calls this with its own constructor closure so the same behavioral
-// assertions run identically against all five backends.
-//
-// Parameters:
-//   - t: *testing.T
-//   - newCache: func() (grcache.Cache, error) — called once per scenario to
-//     get a fresh, isolated Cache instance
-//   - opts: ...RunOption — normally omitted; see WithBestEffortTagConcurrency
-//     for the one documented exception
-//
-// Example:
-//
-//	func TestConformance(t *testing.T) {
-//		conformance.Run(t, func() (grcache.Cache, error) {
-//			return memory.NewMemoryCache()
-//		})
-//	}
-func Run(t *testing.T, newCache func() (grcache.Cache, error), opts ...RunOption) {
+// runCacheContract executes the full contract suite against Cache instances
+// obtained from newCache, freshly constructed for each scenario.
+func runCacheContract(t *testing.T, newCache func() (grcache.Cache, error), opts ...cacheContractOption) {
 	t.Helper()
 
-	cfg := &runConfig{}
+	cfg := &cacheContractConfig{}
 	for _, opt := range opts {
 		opt(cfg)
 	}
 
 	t.Run("SetThenGet", func(t *testing.T) { testSetThenGet(t, newCache) })
+	t.Run("InvalidTTL", func(t *testing.T) { testInvalidTTL(t, newCache) })
 	t.Run("GetMissing", func(t *testing.T) { testGetMissing(t, newCache) })
 	t.Run("Expiry", func(t *testing.T) { testExpiry(t, newCache) })
 	t.Run("NoExpiry", func(t *testing.T) { testNoExpiry(t, newCache) })
@@ -118,6 +88,51 @@ func Run(t *testing.T, newCache func() (grcache.Cache, error), opts ...RunOption
 	t.Run("PostClose", func(t *testing.T) { testPostClose(t, newCache) })
 }
 
+func TestCache_Contract(t *testing.T) {
+	t.Run("Memory", func(t *testing.T) {
+		runCacheContract(t, func() (grcache.Cache, error) { return grcache.NewMemoryCache() })
+	})
+
+	t.Run("Redis", func(t *testing.T) {
+		if _, err := newRedisCache(); err != nil {
+			t.Skipf("Redis not available, skipping: %v", err)
+		}
+		flushRedisTestDB(t)
+		runCacheContract(t, newRedisCache)
+		flushRedisTestDB(t)
+	})
+
+	t.Run("Memcached", func(t *testing.T) {
+		if _, err := newMemcachedCache(); err != nil {
+			t.Skipf("memcached not available, skipping: %v", err)
+		}
+		flushMemcachedTestServer(t)
+		// memcached's tag emulation is documented best-effort/eventually
+		// consistent under concurrent writes — this is the one backend
+		// that opts into the relaxed ConcurrentTagSet assertion.
+		runCacheContract(t, newMemcachedCache, withBestEffortTagConcurrency())
+		flushMemcachedTestServer(t)
+	})
+
+	t.Run("Postgres", func(t *testing.T) {
+		if _, err := newPostgresCache(); err != nil {
+			t.Skipf("PostgreSQL not available, skipping: %v", err)
+		}
+		truncatePostgresTestDB(t)
+		runCacheContract(t, newPostgresCache)
+		truncatePostgresTestDB(t)
+	})
+
+	t.Run("Mongo", func(t *testing.T) {
+		if _, err := newMongoCache(); err != nil {
+			t.Skipf("MongoDB not available, skipping: %v", err)
+		}
+		dropMongoTestDB(t)
+		runCacheContract(t, newMongoCache)
+		dropMongoTestDB(t)
+	})
+}
+
 func testSetThenGet(t *testing.T, newCache func() (grcache.Cache, error)) {
 	t.Helper()
 	ctx := context.Background()
@@ -125,7 +140,7 @@ func testSetThenGet(t *testing.T, newCache func() (grcache.Cache, error)) {
 	if err != nil {
 		t.Fatalf("newCache: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	want := []byte("hello world")
 	if err := cache.Set(ctx, "k1", want, time.Minute); err != nil {
@@ -141,6 +156,20 @@ func testSetThenGet(t *testing.T, newCache func() (grcache.Cache, error)) {
 	}
 }
 
+func testInvalidTTL(t *testing.T, newCache func() (grcache.Cache, error)) {
+	t.Helper()
+	ctx := context.Background()
+	cache, err := newCache()
+	if err != nil {
+		t.Fatalf("newCache: %v", err)
+	}
+	defer func() { _ = cache.Close() }()
+
+	if err := cache.Set(ctx, "k", []byte("v"), -time.Second); !errors.Is(err, grcache.ErrInvalidTTL) {
+		t.Fatalf("Set with negative ttl error = %v, want ErrInvalidTTL", err)
+	}
+}
+
 func testGetMissing(t *testing.T, newCache func() (grcache.Cache, error)) {
 	t.Helper()
 	ctx := context.Background()
@@ -148,7 +177,7 @@ func testGetMissing(t *testing.T, newCache func() (grcache.Cache, error)) {
 	if err != nil {
 		t.Fatalf("newCache: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	_, err = cache.Get(ctx, "does-not-exist")
 	if !errors.Is(err, grcache.ErrKeyNotFound) {
@@ -163,10 +192,10 @@ func testExpiry(t *testing.T, newCache func() (grcache.Cache, error)) {
 	if err != nil {
 		t.Fatalf("newCache: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	// ttl/sleep are deliberately >= 1 second: memcached only supports
-	// second-granularity expiry (see grcache/memcached's expirationSeconds),
+	// second-granularity expiry (see expirationSeconds in memcached.go),
 	// so a shorter ttl here would pass on finer-grained backends but be
 	// meaningless on memcached.
 	if err := cache.Set(ctx, "expiring", []byte("v"), 1100*time.Millisecond); err != nil {
@@ -195,7 +224,7 @@ func testNoExpiry(t *testing.T, newCache func() (grcache.Cache, error)) {
 	if err != nil {
 		t.Fatalf("newCache: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	if err := cache.Set(ctx, "forever", []byte("v"), 0); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -215,7 +244,7 @@ func testDeleteNonExistent(t *testing.T, newCache func() (grcache.Cache, error))
 	if err != nil {
 		t.Fatalf("newCache: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	if err := cache.Delete(ctx, "never-existed"); err != nil {
 		t.Fatalf("Delete(non-existent) = %v, want nil", err)
@@ -229,7 +258,7 @@ func testExists(t *testing.T, newCache func() (grcache.Cache, error)) {
 	if err != nil {
 		t.Fatalf("newCache: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	if ok, err := cache.Exists(ctx, "not-set"); err != nil || ok {
 		t.Fatalf("Exists(not-set) = (%v, %v), want (false, nil)", ok, err)
@@ -261,7 +290,7 @@ func testTagInvalidation(t *testing.T, newCache func() (grcache.Cache, error)) {
 		if err != nil {
 			t.Fatalf("newCache: %v", err)
 		}
-		defer cache.Close()
+		defer func() { _ = cache.Close() }()
 
 		if err := cache.Set(ctx, "k1", []byte("v1"), time.Minute, "tagA"); err != nil {
 			t.Fatalf("Set: %v", err)
@@ -286,7 +315,7 @@ func testTagInvalidation(t *testing.T, newCache func() (grcache.Cache, error)) {
 		if err != nil {
 			t.Fatalf("newCache: %v", err)
 		}
-		defer cache.Close()
+		defer func() { _ = cache.Close() }()
 
 		keys := []string{"m1", "m2", "m3", "m4", "m5"}
 		for _, k := range keys {
@@ -316,7 +345,7 @@ func testTagInvalidation(t *testing.T, newCache func() (grcache.Cache, error)) {
 		if err != nil {
 			t.Fatalf("newCache: %v", err)
 		}
-		defer cache.Close()
+		defer func() { _ = cache.Close() }()
 
 		if err := cache.Set(ctx, "multi", []byte("v"), time.Minute, "tagX", "tagY"); err != nil {
 			t.Fatalf("Set: %v", err)
@@ -341,7 +370,7 @@ func testTagInvalidation(t *testing.T, newCache func() (grcache.Cache, error)) {
 		if err != nil {
 			t.Fatalf("newCache: %v", err)
 		}
-		defer cache.Close()
+		defer func() { _ = cache.Close() }()
 
 		if err := cache.Set(ctx, "reset-key", []byte("v1"), time.Minute, "tagZ"); err != nil {
 			t.Fatalf("Set: %v", err)
@@ -377,7 +406,7 @@ func testTagInvalidation(t *testing.T, newCache func() (grcache.Cache, error)) {
 		if err != nil {
 			t.Fatalf("newCache: %v", err)
 		}
-		defer cache.Close()
+		defer func() { _ = cache.Close() }()
 
 		n, err := cache.InvalidateTag(ctx, "never-used-tag")
 		if err != nil {
@@ -396,7 +425,7 @@ func testConcurrentAccess(t *testing.T, newCache func() (grcache.Cache, error)) 
 	if err != nil {
 		t.Fatalf("newCache: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	const workers = 20
 	const opsPerWorker = 50
@@ -439,7 +468,7 @@ func testConcurrentTagSet(t *testing.T, newCache func() (grcache.Cache, error), 
 	if err != nil {
 		t.Fatalf("newCache: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	const n = 50
 	const tag = "concurrent-tag-set-tag"
@@ -486,7 +515,7 @@ func testStatsSanity(t *testing.T, newCache func() (grcache.Cache, error)) {
 	if err != nil {
 		t.Fatalf("newCache: %v", err)
 	}
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 
 	before, err := cache.Stats(ctx)
 	if err != nil {
@@ -544,5 +573,21 @@ func testPostClose(t *testing.T, newCache func() (grcache.Cache, error)) {
 
 	if err := cache.Set(ctx, "anything", []byte("v"), time.Minute); !errors.Is(err, grcache.ErrClosed) {
 		t.Fatalf("Set after Close error = %v, want ErrClosed", err)
+	}
+
+	if err := cache.Delete(ctx, "anything"); !errors.Is(err, grcache.ErrClosed) {
+		t.Fatalf("Delete after Close error = %v, want ErrClosed", err)
+	}
+
+	if _, err := cache.Exists(ctx, "anything"); !errors.Is(err, grcache.ErrClosed) {
+		t.Fatalf("Exists after Close error = %v, want ErrClosed", err)
+	}
+
+	if _, err := cache.InvalidateTag(ctx, "anything"); !errors.Is(err, grcache.ErrClosed) {
+		t.Fatalf("InvalidateTag after Close error = %v, want ErrClosed", err)
+	}
+
+	if _, err := cache.Stats(ctx); !errors.Is(err, grcache.ErrClosed) {
+		t.Fatalf("Stats after Close error = %v, want ErrClosed", err)
 	}
 }

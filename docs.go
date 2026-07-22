@@ -29,11 +29,11 @@
 //		"log"
 //		"time"
 //
-//		"github.com/gourdian25/grcache/memory"
+//		"github.com/gourdian25/grcache"
 //	)
 //
 //	func main() {
-//		cache, err := memory.NewMemoryCache()
+//		cache, err := grcache.NewMemoryCache()
 //		if err != nil {
 //			log.Fatal(err)
 //		}
@@ -53,42 +53,44 @@
 //
 // Backends:
 //
-// Each backend lives in its own importable subpackage so that consumers who
-// only need one backend don't pull in the client libraries the others
-// depend on — importing grcache/memory alone adds zero external
-// dependencies.
+// grcache is a flat, single package — every backend's constructor and
+// Config type live directly in the grcache package (no subpackages to
+// import selectively). This trades away per-backend dependency isolation
+// for consistency with the rest of the gourdian ecosystem's flat-package
+// convention; see docs/architecture.md for the full rationale.
 //
-//  1. In-memory (grcache/memory) — default, zero external dependency, for
+//  1. In-memory (NewMemoryCache) — default, zero external dependency, for
 //     local development and testing. A background goroutine sweeps expired
 //     entries; Get/Exists also check expiry lazily as a correctness backstop.
 //
-//     cache, err := memory.NewMemoryCache(memory.WithSweepInterval(30 * time.Second))
+//     cache, err := grcache.NewMemoryCache(grcache.WithSweepInterval(30 * time.Second))
 //
-//  2. Redis (grcache/redis) — primary production backend. Tags are stored as
+//  2. Redis (NewRedisCache) — primary production backend. Tags are stored as
 //     Redis Sets; InvalidateTag pipelines SMEMBERS + DEL.
 //
-//     cache, err := redis.NewRedisCache(redis.RedisConfig{Addr: "localhost:6379"})
+//     cache, err := grcache.NewRedisCache(grcache.RedisConfig{Addr: "localhost:6379"})
 //
-//  3. Memcached (grcache/memcached) — secondary backend. Tags are emulated
+//  3. Memcached (NewMemcachedCache) — secondary backend. Tags are emulated
 //     via a serialized member list, which is best-effort/eventually
-//     consistent under concurrent writes (see grcache/memcached's package
+//     consistent under concurrent writes (see memcached.go's package
 //     doc for the exact tradeoff).
 //
-//     cache, err := memcached.NewMemcachedCache(memcached.MemcachedConfig{Servers: []string{"localhost:11211"}})
+//     cache, err := grcache.NewMemcachedCache(grcache.MemcachedConfig{Servers: []string{"localhost:11211"}})
 //
-//  4. PostgreSQL (grcache/postgres) — via GORM. Tags live in a separate join
-//     table kept in sync with the entries table on every Set/Delete.
-//     Intended for test/dev/CI environments with Postgres already
-//     available but no Redis/memcached; prefer Redis in production.
+//  4. PostgreSQL (NewPostgresCache) — via pgx/v5 + sqlc-generated queries
+//     (no ORM). Tags live in a separate join table kept in sync with the
+//     entries table on every Set/Delete. Intended for test/dev/CI
+//     environments with Postgres already available but no Redis/memcached;
+//     prefer Redis in production.
 //
-//     cache, err := postgres.NewPostgresCache(postgres.PostgresConfig{DSN: dsn})
+//     cache, err := grcache.NewPostgresCache(grcache.PostgresConfig{DSN: dsn})
 //
-//  5. MongoDB (grcache/mongo) — tags live directly on the document as an
+//  5. MongoDB (NewMongoCache) — tags live directly on the document as an
 //     array field. A TTL index (expireAfterSeconds: 0) gives native,
 //     database-managed expiry, the same as Redis's EX. Same intended use
 //     case as PostgreSQL above: test/dev/CI without Redis/memcached.
 //
-//     cache, err := mongo.NewMongoCache(mongo.MongoConfig{URI: uri, Database: "myapp"})
+//     cache, err := grcache.NewMongoCache(grcache.MongoConfig{URI: uri, Database: "myapp"})
 //
 // Dragonfly and Valkey are Redis-protocol compatible — point RedisConfig.Addr
 // at either instead of building a separate backend.
@@ -118,7 +120,7 @@
 //		// backend unavailable or another real failure
 //	}
 //
-// Backend-native errors (redis.Nil, gorm.ErrRecordNotFound,
+// Backend-native errors (redis.Nil, pgx.ErrNoRows,
 // mongo.ErrNoDocuments, memcache.ErrCacheMiss) are always translated into a
 // grcache sentinel before being wrapped — a caller using only errors.Is
 // against grcache's own sentinels never needs to know which backend is
@@ -140,15 +142,17 @@
 //
 // Architecture:
 //
-// The root grcache package holds only the Cache interface, Stats, sentinel
-// errors, and the Logger interface — stdlib only, no external dependencies.
-// Each backend subpackage implements Cache against its own client library.
-// A shared conformance package (imported sideways by every backend's own
-// tests, never the reverse) runs one behavioral test suite against all five
-// backends through the Cache interface, enforcing identical behavior for
-// every scenario the suite covers. It is not an exhaustive proof of
-// parity — see conformance.go for the current scenario list and each
-// backend's own test file for anything scenario-specific it adds on top.
+// grcache is one flat package: cache.go/errors.go/logger.go hold the Cache
+// interface, Stats, sentinel errors, and the Logger interface (stdlib
+// only), and each backend's Config type, constructor, and concrete
+// (unexported) implementation live in their own file (memory.go, redis.go,
+// memcached.go, postgres.go, mongo.go). A shared contract test suite
+// (contract_cache_test.go, run via TestCache_Contract's per-backend
+// subtests) runs one behavioral test against all five backends through the
+// Cache interface, enforcing identical behavior for every scenario it
+// covers. It is not an exhaustive proof of parity — see that file for the
+// current scenario list and each backend's own *_test.go file for anything
+// scenario-specific it adds on top.
 //
 // Testing:
 //
