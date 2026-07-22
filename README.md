@@ -364,7 +364,7 @@ make docker-down # stops them when you're done
 |---|---|
 | Redis | `localhost:6379`, password `redis_password`, DB `14` |
 | PostgreSQL | `host=localhost user=postgres_user password=postgres_password dbname=grcache_test port=5432 sslmode=disable` |
-| MongoDB | `mongodb://root:mongo_password@localhost:27018/?replicaSet=rs0&authSource=admin&directConnection=true`, database `grcache_test` |
+| MongoDB | `mongodb://root:mongo_password@localhost:27018/?directConnection=true`, database `grcache_test` |
 | Memcached | `localhost:11211` |
 
 The Redis DB index and Postgres/Mongo database names are deliberately
@@ -372,7 +372,7 @@ different from gourdiantoken's own test settings (DB 15, `gourdiantoken_test`,
 and its own Mongo database) so both suites can run against the same shared
 instances without colliding.
 
-The root package maintains at least 95% test coverage:
+The root package maintains 95.6% test coverage, enforced by a 95% gate:
 
 ```sh
 make coverage-check
@@ -458,7 +458,9 @@ make goreleaser-check          # dry run — validates .goreleaser.yaml, builds 
 make release VERSION=vX.Y.Z    # tags, pushes, and runs goreleaser release --clean
 ```
 
-See [`CHANGELOG.md`](CHANGELOG.md) for release history.
+See [`CHANGELOG.md`](CHANGELOG.md) for release history and
+[`SECURITY.md`](SECURITY.md) to report a vulnerability privately instead of
+opening a public issue.
 
 ## 📄 License
 

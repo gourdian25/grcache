@@ -71,6 +71,16 @@ changes** (allowed pre-1.0).
   in-memory backend), and a handful of per-backend constructor/schema/
   index-creation edge cases.
 
+### Documentation
+
+- README: fixed the documented Mongo test URI, which included an
+  unnecessary `replicaSet=rs0&authSource=admin` — the actual `mongo_test.go`
+  only needs `directConnection=true`.
+- README: stated the precise root-package coverage number (95.6%, via
+  `make coverage-check`) instead of the looser "at least 95%".
+- README: linked `SECURITY.md` alongside the existing `CHANGELOG.md`
+  reference in the Releasing section.
+
 ## [0.2.0] - 2026-07-10
 
 Ecosystem-alignment pass ahead of `grauth`. Contains a **breaking change**
