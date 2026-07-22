@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-07-23
+
+### Changed
+
+- Bumped `github.com/gourdian25/grlog` to `v0.1.2` (the `v0.3.0` release was
+  cut with `go.mod` still pinned to `v0.1.1` due to a transient
+  `sum.golang.org` failure during release prep; no functional change since
+  `v0.1.2` is docs/tests-only relative to `v0.1.1`).
+
 ## [0.3.0] - 2026-07-23
 
 Ecosystem-wide Stage 2 pass: flattened to a single package, GORM removed,
