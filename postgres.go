@@ -159,13 +159,13 @@ func NewPostgresCache(cfg PostgresConfig) (Cache, error) {
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
-		logger.Errorf("grcache/postgres: open failed: %v", err)
+		logger.Error("grcache/postgres: open failed", "error", err)
 		return nil, fmt.Errorf("grcache/postgres: open: %w", ErrCacheUnavailable)
 	}
 
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		logger.Errorf("grcache/postgres: ping failed: %v", err)
+		logger.Error("grcache/postgres: ping failed", "error", err)
 		return nil, fmt.Errorf("grcache/postgres: ping: %w", ErrCacheUnavailable)
 	}
 
@@ -174,7 +174,7 @@ func NewPostgresCache(cfg PostgresConfig) (Cache, error) {
 		return nil, fmt.Errorf("grcache/postgres: apply schema: %w", err)
 	}
 
-	logger.Infof("grcache/postgres: connected (sweep interval %s)", cfg.SweepInterval)
+	logger.Info("grcache/postgres: connected", "sweep_interval", cfg.SweepInterval)
 
 	c := &postgresCache{
 		pool:      pool,
@@ -252,7 +252,7 @@ func (c *postgresCache) sweep() {
 
 	keys, err := c.q.ListExpiredKeys(ctx)
 	if err != nil {
-		c.logger.Errorf("grcache/postgres: sweep failed: %v", err)
+		c.logger.Error("grcache/postgres: sweep failed", "error", err)
 		return
 	}
 	if len(keys) == 0 {
@@ -267,12 +267,12 @@ func (c *postgresCache) sweep() {
 		return q.DeleteEntryTagsByKeys(ctx, keys)
 	})
 	if err != nil {
-		c.logger.Errorf("grcache/postgres: sweep failed: %v", err)
+		c.logger.Error("grcache/postgres: sweep failed", "error", err)
 		return
 	}
 
 	c.evictions.Add(uint64(len(keys)))
-	c.logger.Infof("grcache/postgres: sweep reclaimed %d expired entries", len(keys))
+	c.logger.Debug("grcache/postgres: sweep reclaimed expired entries", "count", len(keys))
 }
 
 func (c *postgresCache) Get(ctx context.Context, key string) ([]byte, error) {
@@ -407,7 +407,7 @@ func (c *postgresCache) Close() error {
 		close(c.closeChan)
 		c.wg.Wait()
 		c.pool.Close()
-		c.logger.Infof("grcache/postgres: cache closed")
+		c.logger.Info("grcache/postgres: cache closed")
 	})
 	return nil
 }

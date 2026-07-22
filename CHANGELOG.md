@@ -11,6 +11,18 @@ Ecosystem-wide Stage 2 pass: flattened to a single package, GORM removed,
 a couple of real bug fixes, and coverage raised. Contains **breaking
 changes** (allowed pre-1.0).
 
+### Changed (breaking)
+
+- `Logger`'s three printf-style methods (`Infof`/`Warnf`/`Errorf(format
+  string, args ...interface{})`) replaced with four `log/slog`-shaped
+  methods (`Debug`/`Info`/`Warn`/`Error(msg string, args ...any)`), matching
+  `*slog.Logger`'s own signatures exactly so any slog-based logger —
+  including `*grlog.Logger` via `slog.New(grlog.NewSlogHandler(...))` —
+  satisfies it with no adapter. Allowed pre-1.0; consistent with the same
+  change landing across grevents/graudit/grpolicy/grnoti/gourdiantoken in
+  this pass. Real structured field values (previously flattened into
+  printf format strings) now reach any structured-output logger intact.
+
 ### Changed
 
 - **Breaking:** flattened from one root package plus a subpackage per

@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/gourdian25/grlog"
@@ -96,13 +97,16 @@ func demoMemory(ctx context.Context) {
 	walkthrough(ctx, "memory", cache)
 }
 
-// demoMemoryWithLogging shows grlog interoperability: *grlog.Logger
-// satisfies grcache.Logger with no adapter needed.
+// demoMemoryWithLogging shows grlog interoperability: wrapping a
+// *grlog.Logger in slog.New(grlog.NewSlogHandler(...)) satisfies
+// grcache.Logger with no other adapter needed.
 func demoMemoryWithLogging(ctx context.Context) {
 	fmt.Println("\n--- memory with grlog logging ---")
 	logger := grlog.NewDefaultLogger()
+	defer func() { _ = logger.Close() }()
+
 	cache, err := grcache.NewMemoryCache(
-		grcache.WithLogger(logger),
+		grcache.WithLogger(slog.New(grlog.NewSlogHandler(logger))),
 		grcache.WithSweepInterval(5*time.Second),
 	)
 	if err != nil {

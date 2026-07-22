@@ -38,7 +38,7 @@ Everything is in package `grcache`, one file per backend plus the shared interfa
 
 - **`cache.go`** — the `Cache` interface (`Get`, `Set`, `Delete`, `Exists`, `InvalidateTag`, `Stats`, `Close`) and the `Stats` struct.
 - **`errors.go`** — sentinel errors (`ErrKeyNotFound`, `ErrCacheUnavailable`, `ErrInvalidTTL`, `ErrClosed`), usable with `errors.Is`. No `IsX(err) bool` helpers, by convention.
-- **`logger.go`** — the optional `Logger` interface (`Infof`/`Warnf`/`Errorf`) plus `NopLogger`/`OrNop`. grcache itself never imports grlog — it's a test-only dependency of this module (see `logger_test.go` and each backend's own `TestWithLogger`).
+- **`logger.go`** — the optional `Logger` interface, shaped exactly like `*slog.Logger` (`Debug`/`Info`/`Warn`/`Error(msg string, args ...any)`), plus `NopLogger`/`OrNop`. grcache itself never imports grlog or log/slog — grlog is a test-only dependency of this module, plugged in via `slog.New(grlog.NewSlogHandler(...))` (see `logger_test.go` and each backend's own `TestWithLogger`).
 - **`docs.go`** — package-level doc comment only, no code.
 - **One file per backend**, each defining its own unexported concrete type behind the shared `Cache` interface and a `New<Backend>Cache(cfg <Backend>Config) (Cache, error)` constructor — the same shape for every backend:
   - `memory.go` (`memoryCache`) — `sync.RWMutex`-protected map + tag index (`map[string]map[string]struct{}`), both behind the same mutex to avoid a race window between value and tag state. A background sweep goroutine (mirrors grlog's `closed atomic.Bool` + `closeChan` + `sync.WaitGroup` shutdown idiom) reclaims expired entries; `Get`/`Exists` also check expiry lazily as the actual correctness mechanism — the sweep is a memory-reclamation optimization only.

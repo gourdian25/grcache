@@ -121,11 +121,11 @@ func NewMemcachedCache(cfg MemcachedConfig) (Cache, error) {
 	}
 
 	if err := client.Ping(); err != nil {
-		logger.Errorf("grcache/memcached: connect %v failed: %v", cfg.Servers, err)
+		logger.Error("grcache/memcached: connect failed", "servers", cfg.Servers, "error", err)
 		return nil, fmt.Errorf("grcache/memcached: connect %v: %w", cfg.Servers, ErrCacheUnavailable)
 	}
 
-	logger.Infof("grcache/memcached: connected to %v", cfg.Servers)
+	logger.Info("grcache/memcached: connected", "servers", cfg.Servers)
 	return &memcachedCache{client: client, logger: logger}, nil
 }
 
@@ -300,7 +300,7 @@ func (c *memcachedCache) Close() error {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
 		err = c.client.Close()
-		c.logger.Infof("grcache/memcached: cache closed")
+		c.logger.Info("grcache/memcached: cache closed")
 	})
 	return err
 }

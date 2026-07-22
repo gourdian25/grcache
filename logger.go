@@ -4,37 +4,44 @@ package grcache
 
 // Logger is the minimal logging interface grcache backends accept for
 // optional diagnostic logging (constructor connectivity failures,
-// background sweep-cycle summaries, shutdown). It is satisfied structurally
-// by *grlog.Logger's printf-style methods (Infof/Warnf/Errorf) — grcache
-// itself does not import grlog, so plugging in a logger is entirely opt-in
-// and adds no dependency for consumers who don't want one. Any logger
-// exposing the same three methods works; grlog is simply the ecosystem's
-// own recommended choice.
+// background sweep-cycle summaries, shutdown). Its four methods match
+// *slog.Logger's own signatures exactly, so *slog.Logger satisfies it
+// structurally — grcache itself does not import grlog or log/slog, so
+// plugging in a logger is entirely opt-in and adds no dependency for
+// consumers who don't want one. Any logger exposing the same four methods
+// works.
 //
 // A nil Logger passed to any backend's Config/Option is replaced with
 // NopLogger() — logging is always optional, never required for a backend to
 // function.
 //
-// Example:
+// Example, using grlog via its log/slog adapter (the recommended bridge —
+// grlog itself needs no code changes for this):
 //
-//	import "github.com/gourdian25/grlog"
+//	import (
+//		"log/slog"
 //
-//	logger := grlog.NewDefaultLogger()
+//		"github.com/gourdian25/grlog"
+//	)
+//
+//	logger := slog.New(grlog.NewSlogHandler(grlog.NewDefaultLogger()))
 //	cache, err := redis.NewRedisCache(redis.RedisConfig{
 //		Addr:   "localhost:6379",
-//		Logger: logger, // *grlog.Logger satisfies grcache.Logger directly
+//		Logger: logger, // *slog.Logger satisfies grcache.Logger directly
 //	})
 type Logger interface {
-	Infof(format string, args ...interface{})
-	Warnf(format string, args ...interface{})
-	Errorf(format string, args ...interface{})
+	Debug(msg string, args ...any)
+	Info(msg string, args ...any)
+	Warn(msg string, args ...any)
+	Error(msg string, args ...any)
 }
 
 type noopLogger struct{}
 
-func (noopLogger) Infof(string, ...interface{})  {}
-func (noopLogger) Warnf(string, ...interface{})  {}
-func (noopLogger) Errorf(string, ...interface{}) {}
+func (noopLogger) Debug(string, ...any) {}
+func (noopLogger) Info(string, ...any)  {}
+func (noopLogger) Warn(string, ...any)  {}
+func (noopLogger) Error(string, ...any) {}
 
 // NopLogger returns a Logger that discards every message. It is the default
 // used by every backend when no Logger is configured.

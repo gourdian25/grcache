@@ -128,13 +128,15 @@ point of dereferencing them back into a value key).
 
 Every backend accepts an optional `grcache.Logger` (see `logger.go`) for
 diagnostic messages — connection failures, sweep-cycle summaries, shutdown.
-The interface is deliberately minimal (`Infof`/`Warnf`/`Errorf`) and defined
-in the root package using only stdlib types, so no backend's production
-code needs to import a logging library to accept one structurally. `grlog`
-is used only in this module's own test suite (`logger_test.go` and each
-backend's `TestWithLogger`/`Test<Backend>WithLogger`) to prove a real
-`*grlog.Logger` satisfies the interface — it is never a dependency of any
-backend's non-test code.
+The interface is deliberately minimal and shaped exactly like `*slog.Logger`
+(`Debug`/`Info`/`Warn`/`Error(msg string, args ...any)`), defined in the root
+package using only stdlib types, so no backend's production code needs to
+import a logging library to accept one structurally — `*slog.Logger`
+satisfies it directly with no adapter. `grlog` is used only in this
+module's own test suite (`logger_test.go` and each backend's
+`TestWithLogger`/`Test<Backend>WithLogger`) to prove a real `*grlog.Logger`,
+wrapped via `slog.New(grlog.NewSlogHandler(...))`, satisfies the interface —
+it is never a dependency of any backend's non-test code.
 
 ## Backend-specific design notes
 

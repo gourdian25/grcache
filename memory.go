@@ -119,7 +119,7 @@ func NewMemoryCache(opts ...MemoryOption) (Cache, error) {
 		opt(c)
 	}
 
-	c.logger.Infof("grcache/memory: cache started (sweep interval %s)", c.sweepInterval)
+	c.logger.Info("grcache/memory: cache started", "sweep_interval", c.sweepInterval)
 
 	c.wg.Add(1)
 	go c.sweepLoop()
@@ -158,7 +158,7 @@ func (c *memoryCache) sweep() {
 	c.mu.Unlock()
 
 	if swept > 0 {
-		c.logger.Infof("grcache/memory: sweep reclaimed %d expired entries", swept)
+		c.logger.Debug("grcache/memory: sweep reclaimed expired entries", "count", swept)
 	}
 }
 
@@ -327,6 +327,6 @@ func (c *memoryCache) Close() error {
 	}
 	close(c.closeChan)
 	c.wg.Wait()
-	c.logger.Infof("grcache/memory: cache closed")
+	c.logger.Info("grcache/memory: cache closed")
 	return nil
 }

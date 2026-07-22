@@ -25,8 +25,9 @@
 //   - A Stats() snapshot (hits, misses, evictions, key count, avg latency)
 //   - Sentinel errors (ErrKeyNotFound, ErrCacheUnavailable, ErrInvalidTTL,
 //     ErrClosed) usable with errors.Is
-//   - Optional diagnostic logging via any logger satisfying the small
-//     Logger interface — grlog.Logger works with no adapter
+//   - Optional diagnostic logging via any logger satisfying the small,
+//     slog-shaped Logger interface — *slog.Logger works with no adapter,
+//     and grlog plugs in via its log/slog adapter
 //
 // # Getting Started
 //
@@ -138,9 +139,13 @@
 // (connection failures, sweep-cycle summaries, shutdown). A nil Logger (the
 // default) means grcache logs nothing.
 //
-//	import "github.com/gourdian25/grlog"
+//	import (
+//		"log/slog"
 //
-//	logger := grlog.NewDefaultLogger()
+//		"github.com/gourdian25/grlog"
+//	)
+//
+//	logger := slog.New(grlog.NewSlogHandler(grlog.NewDefaultLogger()))
 //	cache, err := redis.NewRedisCache(redis.RedisConfig{
 //		Addr:   "localhost:6379",
 //		Logger: logger,

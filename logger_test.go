@@ -2,37 +2,42 @@
 
 package grcache_test
 
-// This file proves *grlog.Logger satisfies grcache.Logger structurally,
-// without grcache itself importing grlog — grlog is a test-only dependency
-// of this module, so it never leaks into consumers who only import
-// grcache/memory (or any other backend) and don't want a logging
-// dependency at all.
+// This file proves *slog.Logger satisfies grcache.Logger structurally,
+// without grcache itself importing grlog or log/slog — grlog is a
+// test-only dependency of this module, so it never leaks into consumers
+// who only import grcache/memory (or any other backend) and don't want a
+// logging dependency at all.
 
 import (
+	"log/slog"
 	"testing"
 
-	"github.com/gourdian25/grlog"
-
 	"github.com/gourdian25/grcache"
+	"github.com/gourdian25/grlog"
 )
 
-var _ grcache.Logger = (*grlog.Logger)(nil)
+var _ grcache.Logger = (*slog.Logger)(nil)
 
 func TestGrlogSatisfiesLoggerInterface(t *testing.T) {
 	logger := grlog.NewDefaultLogger()
+	defer func() { _ = logger.Close() }()
 
-	var l grcache.Logger = logger
-	l.Infof("grcache test: %s", "info")
-	l.Warnf("grcache test: %s", "warn")
-	l.Errorf("grcache test: %s", "error")
+	slogger := slog.New(grlog.NewSlogHandler(logger))
+	var l grcache.Logger = slogger
+
+	l.Debug("grcache test", "level", "debug")
+	l.Info("grcache test", "level", "info")
+	l.Warn("grcache test", "level", "warn")
+	l.Error("grcache test", "level", "error")
 }
 
 func TestNopLogger(t *testing.T) {
 	l := grcache.NopLogger()
 	// Must not panic with no logger installed.
-	l.Infof("noop")
-	l.Warnf("noop")
-	l.Errorf("noop")
+	l.Debug("noop")
+	l.Info("noop")
+	l.Warn("noop")
+	l.Error("noop")
 }
 
 func TestOrNop(t *testing.T) {
@@ -41,7 +46,10 @@ func TestOrNop(t *testing.T) {
 	}
 
 	logger := grlog.NewDefaultLogger()
-	if grcache.OrNop(logger) != grcache.Logger(logger) {
+	defer func() { _ = logger.Close() }()
+
+	slogger := slog.New(grlog.NewSlogHandler(logger))
+	if grcache.OrNop(slogger) != grcache.Logger(slogger) {
 		t.Fatal("OrNop(non-nil) did not return the given logger unchanged")
 	}
 }

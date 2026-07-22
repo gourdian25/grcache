@@ -3,7 +3,6 @@
 package grcache_test
 
 import (
-	"fmt"
 	"sync"
 )
 
@@ -20,22 +19,15 @@ type recordingLogger struct {
 	errors []string
 }
 
-func (l *recordingLogger) Infof(format string, args ...interface{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.infos = append(l.infos, fmt.Sprintf(format, args...))
-}
+func (l *recordingLogger) Debug(msg string, args ...any) { l.record(&l.infos, msg) }
+func (l *recordingLogger) Info(msg string, args ...any)  { l.record(&l.infos, msg) }
+func (l *recordingLogger) Warn(msg string, args ...any)  { l.record(&l.warns, msg) }
+func (l *recordingLogger) Error(msg string, args ...any) { l.record(&l.errors, msg) }
 
-func (l *recordingLogger) Warnf(format string, args ...interface{}) {
+func (l *recordingLogger) record(dst *[]string, msg string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.warns = append(l.warns, fmt.Sprintf(format, args...))
-}
-
-func (l *recordingLogger) Errorf(format string, args ...interface{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.errors = append(l.errors, fmt.Sprintf(format, args...))
+	*dst = append(*dst, msg)
 }
 
 // total returns the number of messages recorded across all levels.

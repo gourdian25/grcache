@@ -149,11 +149,11 @@ func NewRedisCache(cfg RedisConfig) (Cache, error) {
 	defer cancel()
 	if _, err := client.Ping(ctx).Result(); err != nil {
 		_ = client.Close()
-		logger.Errorf("grcache/redis: connect %s failed: %v", cfg.Addr, err)
+		logger.Error("grcache/redis: connect failed", "addr", cfg.Addr, "error", err)
 		return nil, fmt.Errorf("grcache/redis: connect %s: %w", cfg.Addr, ErrCacheUnavailable)
 	}
 
-	logger.Infof("grcache/redis: connected to %s (db %d)", cfg.Addr, cfg.DB)
+	logger.Info("grcache/redis: connected", "addr", cfg.Addr, "db", cfg.DB)
 	return &redisCache{client: client, logger: logger}, nil
 }
 
@@ -265,7 +265,7 @@ func (c *redisCache) Close() error {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
 		err = c.client.Close()
-		c.logger.Infof("grcache/redis: cache closed")
+		c.logger.Info("grcache/redis: cache closed")
 	})
 	return err
 }

@@ -54,9 +54,10 @@ together:
 - **One flat package.** `go get github.com/gourdian25/grcache` and every
   backend's constructor is right there — no subpackage-per-backend
   navigation, matching every other repo in the gourdian ecosystem.
-- **Optional, adapter-free logging.** Plug in
-  [grlog](https://github.com/gourdian25/grlog) (or any logger with the
-  same three methods) with zero glue code.
+- **Optional, slog-shaped logging.** Plug in
+  [grlog](https://github.com/gourdian25/grlog) via its `log/slog` adapter
+  (or any logger with the same four methods, including `*slog.Logger`
+  directly) with zero glue code.
 
 ## 📚 Table of Contents
 
@@ -372,18 +373,21 @@ Every backend accepts an optional `Logger` (a `Config.Logger` field, or
 opt-in: a nil Logger (the default) means grcache logs nothing, and the
 `grcache` root package itself does not depend on any logging library.
 
-`grcache.Logger` is a tiny structural interface (`Infof`/`Warnf`/`Errorf`),
-satisfied directly by [grlog](https://github.com/gourdian25/grlog)'s
-`*grlog.Logger` — the ecosystem's own recommended choice — with no adapter
-needed:
+`grcache.Logger` is a tiny structural interface shaped exactly like
+`*slog.Logger` (`Debug`/`Info`/`Warn`/`Error(msg string, args ...any)`), so
+`*slog.Logger` satisfies it directly. [grlog](https://github.com/gourdian25/grlog)
+plugs in via its `log/slog` adapter — the ecosystem's own recommended
+bridge:
 
 ```go
 import (
+	"log/slog"
+
 	"github.com/gourdian25/grlog"
 	"github.com/gourdian25/grcache"
 )
 
-logger := grlog.NewDefaultLogger()
+logger := slog.New(grlog.NewSlogHandler(grlog.NewDefaultLogger()))
 
 cache, err := grcache.NewRedisCache(grcache.RedisConfig{
 	Addr:   "localhost:6379",
@@ -391,7 +395,7 @@ cache, err := grcache.NewRedisCache(grcache.RedisConfig{
 })
 ```
 
-Any logger exposing the same three methods works — grlog is not required.
+Any logger exposing the same four methods works — grlog is not required.
 
 ## 🧩 Backend Compatibility
 
