@@ -164,10 +164,10 @@ func TestExpirationSeconds_SubSecondRoundsUpToOne(t *testing.T) {
 
 // TestApplyPostgresSchema_AcquireFailsOnClosedPool exercises
 // applyPostgresSchema's own Acquire-failure branch directly: a closed pool
-// can never hand out a connection. Not reachable through NewPostgresCache
-// itself (which always applies the schema against a pool it just
-// successfully Pinged), so tested by calling the unexported function
-// directly against a pool closed just beforehand.
+// can never hand out a connection. applyPostgresSchema is no longer called
+// by NewPostgresCache at all (see postgres.go) — grcache's own test setup
+// is its only remaining caller — so this is tested by calling the
+// unexported function directly against a pool closed just beforehand.
 func TestApplyPostgresSchema_AcquireFailsOnClosedPool(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -198,6 +198,16 @@ func TestPostgresCache_SweepDirectly(t *testing.T) {
 	}
 	pc := cache.(*postgresCache)
 	defer func() { _ = cache.Close() }()
+
+	// NewPostgresCache no longer applies schema itself (see postgres.go),
+	// so on a genuinely fresh test database grcache_entries may not exist
+	// yet. Without this, the "no expired keys" call below would still
+	// return without panicking, but via ListExpiredKeys' error branch
+	// (relation does not exist) rather than the empty-result branch this
+	// test means to exercise.
+	if err := applyPostgresSchema(context.Background(), pc.pool); err != nil {
+		t.Fatalf("applyPostgresSchema: %v", err)
+	}
 
 	// No expired keys currently present (a fresh cache): must return
 	// promptly without error.

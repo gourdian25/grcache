@@ -19,6 +19,19 @@ import (
 
 const postgresTestDSN = "host=localhost user=postgres_user password=postgres_password dbname=grcache_test port=5432 sslmode=disable"
 
+// ensurePostgresTestSchema applies grcache's Postgres schema against pool
+// by executing PostgresSchemaSQL() directly — standing in for "your own
+// project's migration tool" from that function's own doc comment, since
+// NewPostgresCache itself never applies schema (see postgres.go). Every
+// helper below that might run against a genuinely fresh test database
+// calls this first, including ahead of any pre-test TRUNCATE: truncating a
+// table that was never created because schema was never applied would
+// silently no-op forever, and no table would ever actually get created.
+func ensurePostgresTestSchema(ctx context.Context, pool *pgxpool.Pool) error {
+	_, err := pool.Exec(ctx, grcache.PostgresSchemaSQL())
+	return err
+}
+
 func truncatePostgresTestDB(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -30,12 +43,32 @@ func truncatePostgresTestDB(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// Errors are ignored here since the tables may not exist yet on the
-	// very first run before the schema has ever been applied.
-	_, _ = pool.Exec(ctx, "TRUNCATE TABLE grcache_entries, grcache_entry_tags")
+	// Must come before the TRUNCATE below, not just before whatever
+	// NewPostgresCache call happens after this function returns — see
+	// ensurePostgresTestSchema's own doc comment for why.
+	if err := ensurePostgresTestSchema(ctx, pool); err != nil {
+		t.Fatalf("ensurePostgresTestSchema: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, "TRUNCATE TABLE grcache_entries, grcache_entry_tags"); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
 }
 
 func newPostgresCache() (grcache.Cache, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, postgresTestDSN)
+	if err != nil {
+		return nil, err
+	}
+	defer pool.Close()
+
+	if err := ensurePostgresTestSchema(ctx, pool); err != nil {
+		return nil, err
+	}
+
 	return grcache.NewPostgresCache(grcache.PostgresConfig{DSN: postgresTestDSN})
 }
 
@@ -56,6 +89,10 @@ func newPostgresCacheForTest(t *testing.T) grcache.Cache {
 	return cache
 }
 
+// TestSchemaApplyIsIdempotent exercises PostgresSchemaSQL()'s own
+// idempotency (plain CREATE TABLE/INDEX IF NOT EXISTS statements) via
+// newPostgresCache, which calls ensurePostgresTestSchema on every
+// invocation — calling it twice in a row must not error.
 func TestSchemaApplyIsIdempotent(t *testing.T) {
 	c1, err := newPostgresCache()
 	if err != nil {

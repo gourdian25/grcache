@@ -85,20 +85,53 @@ with sqlc-generated queries (`internal/postgresdb`, generated from
 `internal/postgresdb/schema.sql` and `internal/postgresdb/queries/cache.sql`
 via `sqlc generate` — never hand-edit the generated files), matching the
 pattern gourdiantoken and grnoti already established for their own Postgres
-backends: an embedded schema (`//go:embed`) applied via
-`CREATE TABLE/INDEX IF NOT EXISTS`, serialized by a Postgres advisory lock
-(`grcacheSchemaLockKey`, distinct from gourdiantoken's and grnoti's own lock
-keys) so concurrent callers building a cache against the same fresh
-database don't race on the DDL. `expires_at` changed from GORM's
-zero-`time.Time`-means-no-expiry convention to a genuinely nullable
-`TIMESTAMPTZ` column (`NULL` means no expiry) — a cleaner mapping now that
-GORM's automatic zero-value defaulting is gone, and purely an internal
-schema detail with no effect on the public `Cache` interface (still just a
-`ttl time.Duration`, 0 meaning no expiry, as always).
-`PostgresConfig`'s pool-tuning fields changed from `database/sql`-style
-names (`MaxOpenConns`/`MaxIdleConns`) to pgxpool's own (`MaxConns`/
+backends. `expires_at` changed from GORM's zero-`time.Time`-means-no-expiry
+convention to a genuinely nullable `TIMESTAMPTZ` column (`NULL` means no
+expiry) — a cleaner mapping now that GORM's automatic zero-value defaulting
+is gone, and purely an internal schema detail with no effect on the public
+`Cache` interface (still just a `ttl time.Duration`, 0 meaning no expiry, as
+always). `PostgresConfig`'s pool-tuning fields changed from `database/sql`-
+style names (`MaxOpenConns`/`MaxIdleConns`) to pgxpool's own (`MaxConns`/
 `MinConns`) — an honest reflection of the underlying pool library changing,
 not a gratuitous rename.
+
+### Schema is no longer applied automatically (as of v0.4.0)
+
+Through `v0.3.x`, `NewPostgresCache` applied the embedded schema itself on
+every call (`CREATE TABLE/INDEX IF NOT EXISTS`, serialized by a Postgres
+advisory lock — `grcacheSchemaLockKey`, distinct from gourdiantoken's and
+grnoti's own lock keys — so concurrent callers building a cache against the
+same fresh database wouldn't race on the DDL). That assumed the connecting
+Postgres role has `CREATE` on the target schema, which a deliberately
+least-privilege application role (a common production setup — a separate
+role owns migrations, the app connects with a DML-only role) won't have —
+and unlike most permission problems, this one can't be worked around by
+pre-creating the tables some other way, since `CREATE TABLE IF NOT EXISTS`
+still checks `CREATE` privilege before checking whether the table exists,
+so construction fails every time regardless. This mirrors the exact
+problem gourdiantoken's own Postgres repository hit and fixed in its own
+`v2.4.0` (see gourdiantoken's `CHANGELOG.md`).
+
+`NewPostgresCache` now only pings the pool; it never applies schema.
+`PostgresSchemaSQL()` returns the same embedded schema text (still plain
+`CREATE TABLE/INDEX IF NOT EXISTS`, unchanged) for the caller to apply
+through their own project's migration tool (golang-migrate, Flyway, a plain
+SQL file run in CI, whatever you already use) before ever constructing a
+`Cache`. The advisory-lock-serialized `applyPostgresSchema` helper and
+`grcacheSchemaLockKey` still exist internally, unexported — grcache's own
+test suite is their only remaining caller, and only part of it: being
+unexported, `applyPostgresSchema` is only callable from `package grcache`
+itself, which among this repo's Postgres-related test files is only
+`internal_coverage_test.go` (white-box, reaching into unexported fields
+like `postgresCache.pool` for other reasons — see below). `postgres_test.go`,
+`contract_cache_test.go`, and `cache_bench_test.go` are `package
+grcache_test`, external — this repo's existing per-backend-test convention
+(see `CLAUDE.md`), predating this change — so they can't reach
+`applyPostgresSchema` at all and instead exercise the same schema through
+the exported `PostgresSchemaSQL()`: see `postgres_test.go`'s
+`ensurePostgresTestSchema`, which is effectively grcache dogfooding the
+same "apply schema text yourself, through your own tooling" pattern a real
+consumer is expected to follow.
 
 ## Naming: mongostore/ folded into mongo.go
 

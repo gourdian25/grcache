@@ -232,6 +232,7 @@ backend's GORM-era-adjacent flattening pass.
 ### PostgreSQL
 
 ```go
+// grcache.PostgresSchemaSQL() applied via your own migration tool first.
 cache, err := grcache.NewPostgresCache(grcache.PostgresConfig{
 	DSN:             "host=localhost user=myuser password=mypass dbname=mydb port=5432 sslmode=disable",
 	MaxConns:        0, // pgxpool default
@@ -244,13 +245,16 @@ cache, err := grcache.NewPostgresCache(grcache.PostgresConfig{
 
 Via `pgx/v5` with sqlc-generated queries (no ORM) — replacing an earlier
 GORM implementation. Two tables: `grcache_entries` (key/value/nullable
-expires_at) and `grcache_entry_tags` (a composite-indexed join table),
-schema applied on connect (`CREATE TABLE/INDEX IF NOT EXISTS`, serialized
-by a Postgres advisory lock so concurrent callers building a cache against
-the same fresh database don't race on the DDL). Postgres has no native
-expiry at all — unlike Redis/Mongo, the background sweep here is the
-*only* reclamation mechanism, not a backstop; `Get`/`Exists`'s lazy expiry
-check is what keeps reads correct between sweeps.
+expires_at) and `grcache_entry_tags` (a composite-indexed join table).
+**Schema is never applied automatically** — `NewPostgresCache` only pings
+the pool; call `grcache.PostgresSchemaSQL()` and apply the returned text
+through your own project's migration tool (golang-migrate, Flyway, a plain
+SQL file run in CI, whatever you already use) before constructing a
+`Cache`, the same way `gourdiantoken`'s own Postgres repository works as of
+its `v2.4.0`. Postgres has no native expiry at all — unlike Redis/Mongo,
+the background sweep here is the *only* reclamation mechanism, not a
+backstop; `Get`/`Exists`'s lazy expiry check is what keeps reads correct
+between sweeps.
 
 Intended for test/dev/CI environments with a Postgres instance already
 available but no Redis/memcached — prefer Redis in production.
@@ -298,10 +302,10 @@ Per-backend notes on top of that baseline guarantee:
   from that tag's list (the key itself is never affected — only whether a
   later `InvalidateTag` call for that tag catches it). See
   [Memcached](#memcached) above for the full tradeoff.
-- **PostgreSQL** — schema creation (`CREATE TABLE/INDEX IF NOT EXISTS`) is
-  serialized by a Postgres advisory lock, so multiple processes
-  constructing a cache against the same fresh database concurrently don't
-  race on DDL; per-key reads/writes use standard transactional statements.
+- **PostgreSQL** — schema must already exist before constructing a `Cache`
+  (see [PostgreSQL](#postgresql) above) — `NewPostgresCache` itself only
+  pings the pool, it never creates tables. Per-key reads/writes use
+  standard transactional statements.
 - **MongoDB** — value, tags, and expiry are written together in one
   `ReplaceOne` per `Set`, so a concurrent reader never observes a
   partially-applied update.
