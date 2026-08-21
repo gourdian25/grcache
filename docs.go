@@ -86,9 +86,11 @@
 //
 //  4. PostgreSQL (NewPostgresCache) — via pgx/v5 + sqlc-generated queries
 //     (no ORM). Tags live in a separate join table kept in sync with the
-//     entries table on every Set/Delete. Intended for test/dev/CI
-//     environments with Postgres already available but no Redis/memcached;
-//     prefer Redis in production.
+//     entries table on every Set/Delete. Schema is never applied
+//     automatically — apply PostgresSchemaSQL() through your own migration
+//     tool before constructing. Intended for test/dev/CI environments with
+//     Postgres already available but no Redis/memcached; prefer Redis in
+//     production.
 //
 //     cache, err := grcache.NewPostgresCache(grcache.PostgresConfig{DSN: dsn})
 //

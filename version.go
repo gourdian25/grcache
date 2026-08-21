@@ -3,4 +3,4 @@
 package grcache
 
 // Version is the semantic version of this module, matching its most recent git tag.
-var Version = "v0.3.1"
+var Version = "v0.4.0"

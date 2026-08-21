@@ -5,6 +5,70 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-08-14
+
+**Breaking**, for the Postgres backend only. Mirrors the exact fix
+gourdiantoken shipped in its own `v2.4.0`: `NewPostgresCache`'s schema
+auto-apply on every connect required `CREATE` on the target schema, which
+a deliberately least-privilege application role (a common production
+setup — a separate role owns migrations, the app connects with a
+DML-only role) doesn't have, failing construction with `permission denied
+for schema ...` — and this can't be worked around by pre-creating the
+tables some other way, since `CREATE TABLE IF NOT EXISTS` still checks
+`CREATE` privilege before checking whether the table exists, so the
+attempt fails every time regardless.
+
+Rather than add a flag to opt out of auto-apply on a per-call basis,
+`NewPostgresCache` now **never** applies schema at all. grcache doesn't
+use gourdiantoken's dedicated `docs/postgres.md` convention — see
+`docs/architecture.md`'s "GORM removed" section for the full pattern
+instead.
+
+### Changed (breaking)
+
+- **`NewPostgresCache(cfg)` no longer applies schema.** Signature is
+  unchanged, but its behavior is: construction now only pings the pool.
+  Call `PostgresSchemaSQL()` and apply the result through your own
+  project's migration tool (golang-migrate, Flyway, a plain SQL file run
+  in CI, whatever you already use) before constructing — see
+  `docs/architecture.md`. Existing deployments that relied on the implicit
+  auto-apply need to add that migration step; the schema itself is
+  unchanged (still `CREATE TABLE/INDEX IF NOT EXISTS`, still the same two
+  `grcache_`-prefixed tables, `grcache_entries`/`grcache_entry_tags`).
+  Calling `NewPostgresCache` against a database where they don't exist yet
+  still succeeds (it only pings) — the first real `Get`/`Set`/... call is
+  where it now fails instead, with a plain Postgres "relation does not
+  exist" error wrapped as `ErrCacheUnavailable`.
+- `applyPostgresSchema`/`grcacheSchemaLockKey` (the advisory-lock-
+  serialized helper `NewPostgresCache` used to call automatically) are
+  unchanged internally but are no longer reachable from `NewPostgresCache`
+  — they're used only by grcache's own test setup now.
+
+### Added
+
+- **`PostgresSchemaSQL() string`**, returning grcache's Postgres cache
+  schema as text, for applying through your own migration tool (see
+  `docs/architecture.md`'s "GORM removed" section).
+
+### Documentation
+
+- `postgres.go`'s package/file doc comments, `docs.go`, `docs/architecture.md`'s
+  "GORM removed" section, `CLAUDE.md`, and README.md's PostgreSQL and
+  Thread Safety sections all updated to describe the new
+  apply-schema-yourself behavior instead of the removed auto-apply.
+
+### Why the module path is unchanged
+
+Go's tooling-mandated import-path-suffix rule (`/v2`, `/v3`, ...) only
+applies from major version 2 onward — a `v0.x` or `v1.x` module never
+needs one, no matter how many breaking changes ship, which is the whole
+point of `v0.x`'s semver carve-out (anything may change pre-1.0). grcache
+is still `v0.x`, so this release's breaking change ships as `v0.4.0` with
+no import-path implications at all — consistent with gourdiantoken only
+ever bumping its own import-path suffix on an actual `vN.0.0` major
+release (see gourdiantoken's `v2.2.0` CHANGELOG entry), not on every
+breaking change along the way.
+
 ## [0.3.1] - 2026-07-23
 
 ### Changed
