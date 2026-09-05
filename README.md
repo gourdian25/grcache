@@ -143,7 +143,7 @@ grcache (one flat package)
   ├── redis.go         — github.com/redis/go-redis/v9
   ├── memcached.go      — github.com/bradfitz/gomemcache
   ├── postgres.go        — github.com/jackc/pgx/v5 + sqlc-generated queries (internal/postgresdb)
-  ├── mongo.go            — go.mongodb.org/mongo-driver
+  ├── mongo.go            — go.mongodb.org/mongo-driver/v2
   └── contract_cache_test.go — shared behavioral test suite (TestCache_Contract, one subtest per backend)
 ```
 

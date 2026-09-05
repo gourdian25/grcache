@@ -3,14 +3,11 @@
 // The MongoDB backend (mongoCache) is a grcache backend for test/dev/CI
 // environments that have a MongoDB instance available but not Redis or
 // memcached — it is not a recommended production alternative to the Redis
-// backend. It uses go.mongodb.org/mongo-driver v1 — the same driver family
-// gourdiantoken depends on, tracked to its latest v1.x release rather than
+// backend. It uses go.mongodb.org/mongo-driver/v2 — the same driver family
+// gourdiantoken depends on, tracked to its latest v2.x release rather than
 // pinned to gourdiantoken's exact version (see docs/architecture.md's
 // "Latest dependency versions" divergence), and reuses gourdiantoken's
-// proven TTL-index convention (see below). The v1 module is
-// upstream-deprecated in favor of go.mongodb.org/mongo-driver/v2, but
-// migrating to that would be a breaking API rewrite out of scope for a
-// routine dependency bump.
+// proven TTL-index convention (see below).
 //
 // Unlike Postgres's separate join table, tags live directly as an array
 // field on the same document — Mongo's document model and multikey indexes
@@ -34,10 +31,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 )
 
 const defaultCollection = "grcache_entries"
@@ -138,14 +135,19 @@ func NewMongoCache(cfg MongoConfig) (Cache, error) {
 	cfg = cfg.withDefaults()
 	logger := OrNop(cfg.Logger)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(cfg.URI))
+	// v2's mongo.Connect no longer takes a context or blocks on the network
+	// (it never really did in v1 either -- it just starts background
+	// topology monitoring); Ping is the only real connectivity check, so the
+	// 5s timeout that used to bound the no-op-timeout Connect call now
+	// bounds Ping instead.
+	client, err := mongo.Connect(options.Client().ApplyURI(cfg.URI))
 	if err != nil {
 		logger.Error("grcache/mongo: connect failed", "error", err)
 		return nil, fmt.Errorf("grcache/mongo: connect: %w", ErrCacheUnavailable)
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	if err := client.Ping(ctx, readpref.Primary()); err != nil {
 		_ = client.Disconnect(ctx)
