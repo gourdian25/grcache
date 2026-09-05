@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	gomongo "go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	gomongo "go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/gourdian25/grcache"
 )
@@ -28,14 +28,16 @@ const (
 
 func dropMongoTestDB(t *testing.T) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	client, err := gomongo.Connect(ctx, options.Client().ApplyURI(mongoTestURI))
+	// v2's mongo.Connect no longer takes a context; the timeout now bounds
+	// Drop, the operation that actually talks to the server.
+	client, err := gomongo.Connect(options.Client().ApplyURI(mongoTestURI))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer func() { _ = client.Disconnect(ctx) }()
+	defer func() { _ = client.Disconnect(context.Background()) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	if err := client.Database(mongoTestDatabase).Drop(ctx); err != nil {
 		t.Fatalf("drop database: %v", err)

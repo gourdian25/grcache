@@ -73,9 +73,10 @@ exact versions gourdiantoken uses, for cross-repo consistency. This was
 superseded: grcache now tracks the latest available version of each
 dependency it actually uses (see the README's Dependencies table), rather
 than matching gourdiantoken's pinned versions. `go.mongodb.org/mongo-driver`
-is a partial exception — grcache stays on the v1 module (latest v1.x patch)
-rather than migrating to the `/v2` module path, since that would be a
-breaking API rewrite out of scope for a routine dependency bump.
+has since migrated to the `/v2` module path (see CHANGELOG's `[0.5.0]`) —
+`mongo.go`'s `MongoConfig`/`NewMongoCache` never exposed a driver type in
+their exported signature, so the migration was an internal dependency swap
+only, not a breaking change for grcache's own consumers.
 
 ## GORM removed: postgres.go now uses pgx/v5 + sqlc
 

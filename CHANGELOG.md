@@ -5,6 +5,40 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-05
+
+Migrates the Mongo backend from `go.mongodb.org/mongo-driver` (v1, upstream-
+deprecated) to `go.mongodb.org/mongo-driver/v2`, matching grsentry's already-
+completed migration and bringing grcache in line with the rest of the
+`gourdian25` org. `MongoConfig`/`NewMongoCache` never exposed a driver type
+in their exported signature (unlike, e.g., gourdiantoken's
+`NewMongoTokenRepository(mongoDB *mongo.Database, ...)` — see
+`docs/architecture.md`'s "Latest dependency versions" section for why
+grcache's shape avoids that), so this is an internal dependency swap only —
+no change to `NewMongoCache`'s signature or behavior for grcache's own
+consumers.
+
+### Changed
+
+- `mongo.go` now imports `go.mongodb.org/mongo-driver/v2/{bson,mongo,mongo/options,mongo/readpref}`.
+  `mongo.Connect` dropped its `context.Context` parameter in v2 (it never
+  blocked on the network — `Ping` remains the real connectivity check), so
+  the connect timeout that used to bound `Connect` now bounds the
+  subsequent `Ping` call instead. `client.Ping(ctx, readpref.Primary())`
+  and `mongo.ErrNoDocuments` are unchanged.
+- `go.mod`: `go.mongodb.org/mongo-driver v1.17.9` replaced with
+  `go.mongodb.org/mongo-driver/v2 v2.8.0`; `go mod tidy` also dropped the
+  now-unused `golang/snappy` and `montanaflynn/stats` transitive deps.
+
+### Documentation
+
+- `docs/architecture.md`'s "Latest dependency versions, not version-matched
+  to gourdiantoken" section, which previously said grcache deliberately
+  stayed on v1 "since that would be a breaking API rewrite out of scope for
+  a routine dependency bump," now describes the completed v2 migration.
+  `README.md`'s architecture-tree diagram line for `mongo.go` updated to
+  the `/v2` import path.
+
 ## [0.4.0] - 2026-08-14
 
 **Breaking**, for the Postgres backend only. Mirrors the exact fix
