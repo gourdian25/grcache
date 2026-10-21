@@ -73,9 +73,13 @@
 //     cache, err := grcache.NewMemoryCache(grcache.WithSweepInterval(30 * time.Second))
 //
 //  2. Redis (NewRedisCache) — primary production backend. Tags are stored as
-//     Redis Sets; InvalidateTag pipelines SMEMBERS + DEL.
+//     Redis Sets; InvalidateTag pipelines SMEMBERS + DEL. Either dials its
+//     own client from Addr, or shares one the caller already holds via
+//     RedisConfig.Client (single-node or Sentinel only), which grcache then
+//     never closes.
 //
 //     cache, err := grcache.NewRedisCache(grcache.RedisConfig{Addr: "localhost:6379"})
+//     cache, err := grcache.NewRedisCache(grcache.RedisConfig{Client: rdb})
 //
 //  3. Memcached (NewMemcachedCache) — secondary backend. Tags are emulated
 //     via a serialized member list, which is best-effort/eventually
@@ -148,7 +152,7 @@
 //	)
 //
 //	logger := slog.New(grlog.NewSlogHandler(grlog.NewDefaultLogger()))
-//	cache, err := redis.NewRedisCache(redis.RedisConfig{
+//	cache, err := grcache.NewRedisCache(grcache.RedisConfig{
 //		Addr:   "localhost:6379",
 //		Logger: logger,
 //	})
@@ -186,7 +190,8 @@
 //
 //   - Always `defer cache.Close()` — it stops background goroutines
 //     (memory, postgres) and closes underlying connections (redis, mongo,
-//     memcached)
+//     memcached). A Redis client passed in as RedisConfig.Client is left
+//     open: close it yourself, after the cache
 //   - Treat ErrKeyNotFound as expected control flow, not an error to log
 //   - Use tags to group related keys (e.g. all data for one user or tenant)
 //     rather than tracking key lists yourself

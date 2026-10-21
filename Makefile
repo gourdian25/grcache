@@ -1,11 +1,23 @@
 # File: Makefile
 
-.PHONY: help build test race coverage coverage-summary coverage-check bench lint vet fmt staticcheck clean deps docker-up docker-down tag release goreleaser-check guard-version
+.PHONY: help build test race coverage coverage-summary coverage-check bench lint vet fmt staticcheck clean deps docker-up docker-create docker-down tag release goreleaser-check guard-version
 
 GO := go
 MODULE := github.com/gourdian25/grcache
 COVERAGE_MIN := 95
 VERSION ?=
+
+# The shared Postgres/Redis/Mongo containers every gourdian25 repo tests
+# against. grsentry's docker-compose.yml is the source of truth for how
+# they're built (images, ports, credentials, volumes); this path is where
+# it sits in the usual side-by-side checkout. grcache needs no Kafka.
+GRSENTRY_COMPOSE ?= ../grsentry/docker-compose.yml
+SHARED_CONTAINERS := gourdian-postgres gourdian-redis gourdian-mongo-auth
+
+# wait_for runs the command $(2) once a second until it succeeds, giving up
+# after 60 tries with an error naming container $(1), never looping forever.
+wait_for = for i in $$(seq 60); do { $(2); } >/dev/null 2>&1 && exit 0; sleep 1; done; \
+	echo "FAIL: $(1) is not ready after 60s; see 'docker logs $(1)'"; exit 1
 
 help:
 	@echo "Makefile targets for grcache:"
@@ -21,7 +33,8 @@ help:
 	@echo "  make fmt              Format code"
 	@echo "  make clean            Clean build artifacts"
 	@echo "  make deps             Verify and tidy dependencies"
-	@echo "  make docker-up        Start the shared Postgres/Redis/Mongo/Memcached test containers (idempotent)"
+	@echo "  make docker-up        Start the shared Postgres/Redis/Mongo test containers (from grsentry's docker-compose.yml), plus Memcached (idempotent)"
+	@echo "  make docker-create    Create any missing container with docker run (fallback when grsentry isn't checked out beside this repo)"
 	@echo "  make docker-down      Stop those containers (state preserved for a fast restart)"
 	@echo "  make tag VERSION=vX.Y.Z         Create and push a git tag"
 	@echo "  make release VERSION=vX.Y.Z     Tag, push, and run goreleaser release --clean"
@@ -101,39 +114,61 @@ deps:
 	$(GO) mod tidy
 	@echo "✓ Dependency verification complete"
 
-# docker-up is idempotent: safe to run repeatedly, and safe to run
-# alongside grnoti/graudit/gourdiantoken's own `make docker-up` since every
-# gourdian25 repo shares these same container names/ports — each just
-# gets its own database/keyspace/DB-index inside them (see CLAUDE.md).
-# grcache doesn't need Kafka, unlike grnoti; it's the only repo needing
-# Memcached.
+# docker-up is idempotent and shares its Postgres/Redis/Mongo containers
+# with every other gourdian25 repo (each gets its own database/keyspace
+# inside them; grcache's are the grcache_test database, Redis DB 14 and the
+# grcache_test Mongo database). Containers that already exist, whoever made
+# them, are just started. Missing ones are created from grsentry's
+# docker-compose.yml when that checkout sits beside this one, so they're
+# exactly what grsentry runs and a later `docker compose up` there finds its
+# own containers; otherwise docker-create builds them by hand. Memcached is
+# grcache's alone (no other repo uses it, so grsentry's stack has none) and
+# is always run here. Every wait assumes the compose layout (mongod on 27018
+# inside its container) and gives up after 60s rather than hanging.
 docker-up:
-	@echo "Starting shared test containers..."
-	@docker inspect gourdian-postgres >/dev/null 2>&1 || docker run -d --name gourdian-postgres -p 5432:5432 \
-		-e POSTGRES_USER=postgres_user -e POSTGRES_PASSWORD=postgres_password -e POSTGRES_DB=grcache_test postgres:16
-	@docker start gourdian-postgres >/dev/null 2>&1 || true
-	@docker inspect gourdian-redis >/dev/null 2>&1 || docker run -d --name gourdian-redis -p 6379:6379 redis:7 --requirepass redis_password
-	@docker start gourdian-redis >/dev/null 2>&1 || true
-	@docker inspect gourdian-memcached >/dev/null 2>&1 || docker run -d --name gourdian-memcached -p 11211:11211 memcached:1.6
-	@docker start gourdian-memcached >/dev/null 2>&1 || true
-	@docker volume create gourdian-mongo-keyfile >/dev/null
-	@docker inspect gourdian-mongo-auth >/dev/null 2>&1 || (docker run --rm -v gourdian-mongo-keyfile:/keyfile-dir mongo:7 bash -c "openssl rand -base64 756 > /keyfile-dir/mongo-keyfile && chmod 400 /keyfile-dir/mongo-keyfile && chown 999:999 /keyfile-dir/mongo-keyfile" && docker run -d --name gourdian-mongo-auth -p 27018:27017 -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=mongo_password -v gourdian-mongo-keyfile:/etc/mongo-keyfile-dir mongo:7 --replSet rs0 --keyFile /etc/mongo-keyfile-dir/mongo-keyfile)
-	@docker start gourdian-mongo-auth >/dev/null 2>&1 || true
-	@echo "Waiting for Postgres..."
-	@until docker exec gourdian-postgres pg_isready -U postgres_user >/dev/null 2>&1; do sleep 1; done
-	@docker exec gourdian-postgres psql -U postgres_user -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = 'grcache_test'" | grep -q 1 || \
-		docker exec gourdian-postgres psql -U postgres_user -d postgres -c "CREATE DATABASE grcache_test"
-	@echo "Waiting for Redis..."
-	@until docker exec gourdian-redis redis-cli -a redis_password ping 2>/dev/null | grep -q PONG; do sleep 1; done
-	@echo "Waiting for Memcached..."
-	@until (printf 'version\r\n' | nc -w 1 localhost 11211 2>/dev/null | grep -q VERSION); do sleep 1; done
-	@echo "Waiting for Mongo (auth + replica set)..."
-	@until docker exec gourdian-mongo-auth mongosh --quiet -u root -p mongo_password --authenticationDatabase admin --eval 'db.runCommand({ping:1})' >/dev/null 2>&1; do sleep 1; done
-	@docker exec gourdian-mongo-auth mongosh --quiet -u root -p mongo_password --authenticationDatabase admin --eval 'rs.initiate()' >/dev/null 2>&1 || true
-	@echo "Docker test infrastructure ready (postgres/redis/mongo-auth/memcached)"
+	@missing=""; for c in $(SHARED_CONTAINERS); do docker inspect $$c >/dev/null 2>&1 || missing="$$missing $$c"; done; \
+	if [ -z "$$missing" ]; then \
+		echo "Starting the shared test containers..."; docker start $(SHARED_CONTAINERS) >/dev/null; \
+	elif [ -f "$(GRSENTRY_COMPOSE)" ]; then \
+		echo "Creating$$missing from $(GRSENTRY_COMPOSE)..."; docker compose -f "$(GRSENTRY_COMPOSE)" up -d postgres redis mongo mongo-init; \
+	else \
+		echo "$(GRSENTRY_COMPOSE) not found; creating$$missing with docker run..."; $(MAKE) --no-print-directory docker-create; \
+	fi
+	@docker inspect gourdian-memcached >/dev/null 2>&1 || docker run -d --name gourdian-memcached --restart unless-stopped -p 11211:11211 memcached:1.6-alpine >/dev/null
+	@docker start gourdian-memcached >/dev/null
+	@echo "Waiting for Postgres..."; $(call wait_for,gourdian-postgres,docker exec gourdian-postgres pg_isready -U postgres_user -d postgres)
+	@docker exec gourdian-postgres psql -U postgres_user -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'grcache_test'" | grep -q 1 || \
+		docker exec gourdian-postgres createdb -U postgres_user grcache_test
+	@echo "Waiting for Redis..."; $(call wait_for,gourdian-redis,docker exec gourdian-redis redis-cli -a redis_password ping | grep -q PONG)
+	@echo "Waiting for Memcached..."; $(call wait_for,gourdian-memcached,printf 'version\r\n' | nc -w 1 localhost 11211 | grep -q VERSION)
+	@echo "Waiting for Mongo..."; $(call wait_for,gourdian-mongo-auth,docker exec gourdian-mongo-auth mongosh --port 27018 --quiet --eval 'db.runCommand({ping:1})')
+	@docker exec gourdian-mongo-auth mongosh --port 27018 --quiet -u root -p mongo_password --authenticationDatabase admin --eval \
+		'try { rs.status() } catch (e) { try { rs.initiate({_id: "rs0", members: [{_id: 0, host: "127.0.0.1:27018"}]}) } catch (e2) {} }' >/dev/null
+	@echo "Waiting for the Mongo replica set..."; $(call wait_for,gourdian-mongo-auth,docker exec gourdian-mongo-auth mongosh --port 27018 --quiet -u root -p mongo_password --authenticationDatabase admin --eval 'rs.status().members[0].stateStr' | grep -q PRIMARY)
+	@echo "Docker test infrastructure ready (postgres/redis/mongo-auth/memcached, database grcache_test)"
+
+# docker-create builds whichever shared container is missing with plain
+# docker run, for a checkout without grsentry beside it. Every image, port,
+# credential and volume mirrors $(GRSENTRY_COMPOSE): keep the two in sync.
+# The Mongo replica set is initiated by docker-up, as compose's one-shot
+# mongo-init service does there. Memcached isn't here: docker-up always
+# runs it itself.
+docker-create:
+	@docker inspect gourdian-postgres >/dev/null 2>&1 || docker run -d --name gourdian-postgres --restart unless-stopped -p 5432:5432 \
+		-e POSTGRES_USER=postgres_user -e POSTGRES_PASSWORD=postgres_password -e POSTGRES_DB=grcache_test \
+		-v gourdian-postgres-data:/var/lib/postgresql postgres:18-alpine
+	@docker inspect gourdian-redis >/dev/null 2>&1 || docker run -d --name gourdian-redis --restart unless-stopped -p 6379:6379 \
+		-v gourdian-redis-data:/data redis:8-alpine redis-server --requirepass redis_password
+	@docker inspect gourdian-mongo-auth >/dev/null 2>&1 || { \
+		docker run --rm -v gourdian-mongo-keyfile:/keyfile-dir --entrypoint bash mongo:8.3 -c \
+			'[ -f /keyfile-dir/mongo-keyfile ] || { openssl rand -base64 756 > /keyfile-dir/mongo-keyfile && chmod 400 /keyfile-dir/mongo-keyfile && chown 999:999 /keyfile-dir/mongo-keyfile; }' && \
+		docker run -d --name gourdian-mongo-auth --restart unless-stopped -p 27018:27018 \
+			-e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=mongo_password \
+			-v gourdian-mongo-keyfile:/etc/mongo-keyfile-dir -v gourdian-mongo-data:/data/db \
+			mongo:8.3 --port 27018 --replSet rs0 --keyFile /etc/mongo-keyfile-dir/mongo-keyfile; }
 
 docker-down:
-	@docker stop gourdian-postgres gourdian-redis gourdian-memcached gourdian-mongo-auth 2>/dev/null || true
+	@docker stop $(SHARED_CONTAINERS) gourdian-memcached 2>/dev/null || true
 	@echo "Stopped (containers preserved for a fast restart via 'make docker-up')"
 
 guard-version:

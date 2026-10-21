@@ -114,7 +114,9 @@ type Cache interface {
 
 	// Close releases any underlying connections/resources (stops background
 	// sweep goroutines for memory/postgres, closes the client for redis/
-	// mongo/memcached). After Close, every other method returns ErrClosed.
+	// mongo/memcached, except a Redis client injected through
+	// RedisConfig.Client, which is the caller's to close). After Close,
+	// every other method returns ErrClosed.
 	// Close is idempotent — calling it more than once is safe and returns
 	// nil on every call after the first.
 	//

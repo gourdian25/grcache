@@ -5,6 +5,76 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-22
+
+Adds optional client injection to the Redis backend, so a service that
+already holds a go-redis client can share its pool with grcache instead of
+opening a second one to the same server. It follows grnoti's
+`PostgresConfig.Pool` rule: exactly one of the dial-it-yourself field
+(`Addr`) or the injected client (`Client`), and grcache never closes a
+client it didn't create. Behaviour with `Addr` is unchanged. Additive: no
+existing call needs to change.
+
+### Added
+
+- **`RedisConfig.Client redis.UniversalClient`**, an alternative to `Addr`.
+  `NewRedisCache` uses the client as given: it never dials one of its own,
+  and it only `Ping`s the client to validate it. `Password`, `DB`,
+  `PoolSize` and the timeouts are ignored when `Client` is set, and only
+  `Logger` still applies.
+- **Ownership tracking.** `Close()` closes the client only when grcache
+  dialed it from `Addr` (`redisCache.ownsClient`). An injected client is
+  left open by `Close()`, and by a failed `Ping` in `NewRedisCache`.
+- **Exactly one of `Addr` or `Client`.** `NewRedisCache` returns an error
+  when both are set, or neither.
+- **`*redis.ClusterClient` and `*redis.Ring` are refused** at construction.
+  `Set`/`InvalidateTag` write a value key and its tag keys in one
+  `MULTI`/`EXEC`, which a cluster rejects across hash slots (go-redis
+  `ErrCrossSlot`) and a ring splits per shard. A `*redis.Client`, including
+  a Sentinel failover client, is accepted.
+
+### Changed
+
+- The error for an empty `RedisConfig` now reads "exactly one of
+  RedisConfig.Addr or RedisConfig.Client is required" (was "RedisConfig.Addr
+  is required"). Still a plain error, not a sentinel.
+- `go.mod`: `github.com/jackc/pgx/v5` v5.10.0 → v5.11.0,
+  `github.com/redis/go-redis/v9` v9.21.0 → v9.22.0,
+  `go.mongodb.org/mongo-driver/v2` v2.8.0 → v2.9.1, plus the indirect
+  updates they pull in (`golang.org/x/crypto` v0.57.0, `golang.org/x/sync`
+  v0.23.0, `golang.org/x/text` v0.42.0, `klauspost/compress` v1.20.0, ...).
+  `go.sum` was completed with `go mod tidy`: it was missing those modules'
+  `/go.mod` hashes, so `GOWORK=off go build` failed outside the gourdian25
+  workspace.
+
+### Testing
+
+- New Redis tests: the exactly-one rule, the Cluster/Ring refusal, a cache
+  writing through an injected client, `Close` leaving an injected client
+  open, and a failed `Ping` leaving it open too. The shared contract suite
+  also runs a `RedisInjectedClient` subtest, which puts every scenario
+  through one shared injected client.
+- `make docker-up` now uses the shared containers grsentry's
+  `docker-compose.yml` defines, as grnoti's does. It starts them if they
+  exist, otherwise creates them from `../grsentry/docker-compose.yml`
+  (Postgres, Redis and Mongo only), with a new `make docker-create` fallback
+  (plain `docker run`, mirroring that file) when grsentry isn't checked out
+  beside this repo. It waits on Mongo at port 27018 inside the container,
+  where the old target's wait hung forever against that stack, and every
+  wait gives up after 60s. Memcached, which only grcache uses, is still run
+  by grcache itself, now as `memcached:1.6-alpine`.
+
+### Documentation
+
+- `redis.go`'s file, `RedisConfig`, `NewRedisCache` and `Close` doc
+  comments, `cache.go`'s `Cache.Close` doc, `docs.go` (Redis entry and
+  Best Practices; also fixes the logging example's stale
+  `redis.NewRedisCache(redis.RedisConfig{` from the subpackage era),
+  `docs/architecture.md` §2 (the injection exception, and a corrected note
+  on grnoti's Postgres backend), `CLAUDE.md`, and README.md's Redis
+  ("Sharing an existing client"), Backend Compatibility and Testing
+  sections.
+
 ## [0.5.0] - 2026-09-05
 
 Migrates the Mongo backend from `go.mongodb.org/mongo-driver` (v1, upstream-
