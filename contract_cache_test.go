@@ -102,6 +102,18 @@ func TestCache_Contract(t *testing.T) {
 		flushRedisTestDB(t)
 	})
 
+	// The same contract through a caller-owned client. Every scenario
+	// closes its cache while the next one reuses this client, so the run
+	// also proves Close leaves an injected client open.
+	t.Run("RedisInjectedClient", func(t *testing.T) {
+		client := newInjectedRedisClient(t)
+		flushRedisTestDB(t)
+		runCacheContract(t, func() (grcache.Cache, error) {
+			return grcache.NewRedisCache(grcache.RedisConfig{Client: client})
+		})
+		flushRedisTestDB(t)
+	})
+
 	t.Run("Memcached", func(t *testing.T) {
 		if _, err := newMemcachedCache(); err != nil {
 			t.Skipf("memcached not available, skipping: %v", err)

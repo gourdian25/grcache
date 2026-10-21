@@ -187,7 +187,7 @@ has its own independent cache that will diverge, which is expected.
 
 ```go
 cache, err := grcache.NewRedisCache(grcache.RedisConfig{
-	Addr:         "localhost:6379", // required
+	Addr:         "localhost:6379", // required unless Client is set
 	Password:     "",
 	DB:           0,
 	PoolSize:     100,             // default
@@ -204,6 +204,39 @@ Sets; `InvalidateTag` pipelines `SMEMBERS` + `DEL` in one round trip. No
 Lua/`EVAL` — gourdiantoken's own docs claim Lua scripting but its actual
 code only ever uses `Pipeline`/`SETNX`, so grcache matches gourdiantoken's
 *real* behavior, not its documentation.
+
+#### Sharing an existing client
+
+If your application already holds a go-redis client, pass it as `Client`
+instead of `Addr`, and grcache uses that client's pool rather than opening
+its own:
+
+```go
+rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+defer rdb.Close() // yours to close — grcache never will
+
+cache, err := grcache.NewRedisCache(grcache.RedisConfig{
+	Client: rdb,
+	Logger: logger, // optional; the only other field that applies
+})
+```
+
+- **Exactly one of `Addr` or `Client`.** Setting both, or neither, is an
+  error.
+- **Used as given.** `NewRedisCache` only `Ping`s the client to validate it.
+  `Password`, `DB`, `PoolSize` and the timeouts are ignored, so configure
+  the client yourself before passing it in.
+- **Never closed by grcache.** `cache.Close()` leaves it open, and so does a
+  failed `Ping` in `NewRedisCache`. Closing it is the caller's job. A cache
+  built from `Addr` still closes the client it dialed itself, as before.
+- **Single-node or Sentinel only.** Any `redis.UniversalClient` type-checks,
+  but `NewRedisCache` refuses a `*redis.ClusterClient` or `*redis.Ring`.
+  `Set` and `InvalidateTag` write a value key and its tag keys in one
+  `MULTI`/`EXEC`. A cluster rejects that when the keys hash to different
+  slots (go-redis `ErrCrossSlot`), and a ring splits it across shards,
+  which loses the atomicity. A `*redis.Client`, including a Sentinel
+  failover client and what `redis.NewUniversalClient` returns for a single
+  address or a `MasterName`, is fine.
 
 ### Memcached
 
@@ -404,8 +437,9 @@ Any logger exposing the same four methods works — grlog is not required.
 ## 🧩 Backend Compatibility
 
 Dragonfly and Valkey are Redis-protocol compatible — point the Redis
-backend's `RedisConfig.Addr` at your Dragonfly/Valkey instance; no separate
-backend is needed. Verify compatibility against the specific commands
+backend's `RedisConfig.Addr` at your Dragonfly/Valkey instance (or pass a
+`RedisConfig.Client` already connected to it); no separate backend is
+needed. Verify compatibility against the specific commands
 grcache issues (`GET`, `SET EX`, `DEL`, `EXISTS`, `SADD`, `SMEMBERS`,
 pipelining) rather than assuming blanket compatibility.
 
@@ -413,14 +447,21 @@ pipelining) rather than assuming blanket compatibility.
 
 grcache's tests run against real local services (no mocks, no
 `miniredis`/`testcontainers-go`), mirroring gourdiantoken's testing
-philosophy. These are the same shared containers grnoti, graudit, and
-gourdiantoken test against (each repo gets its own database/keyspace/DB-index)
-— start them with:
+philosophy. Postgres, Redis and Mongo are the shared containers every
+gourdian25 repo tests against (each repo gets its own database/keyspace/DB-index),
+built from [grsentry](https://github.com/gourdian25/grsentry)'s
+`docker-compose.yml`. Memcached is grcache's own, since no other repo uses
+it. Start them with:
 
 ```sh
-make docker-up   # starts the shared Postgres/Redis/Mongo/Memcached test containers
+make docker-up   # starts the shared Postgres/Redis/Mongo containers plus Memcached, and creates grcache_test
 make docker-down # stops them when you're done
 ```
+
+`make docker-up` starts the shared containers if they already exist (whichever
+repo created them). It creates missing ones from `../grsentry/docker-compose.yml`
+when grsentry is checked out beside this repo, and otherwise with plain
+`docker run` (`make docker-create`), mirroring that compose file.
 
 | Backend | Connection |
 |---|---|
@@ -434,7 +475,7 @@ different from gourdiantoken's own test settings (DB 15, `gourdiantoken_test`,
 and its own Mongo database) so both suites can run against the same shared
 instances without colliding.
 
-The root package maintains 95.6% test coverage, enforced by a 95% gate:
+The root package maintains 96.7% test coverage, enforced by a 95% gate:
 
 ```sh
 make coverage-check

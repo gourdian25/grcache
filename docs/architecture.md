@@ -45,12 +45,37 @@ gourdiantoken's own inconsistency, where Mongo's constructor takes an
 extra positional `transactionsEnabled bool` that doesn't fit the otherwise
 uniform shape — every grcache backend constructor has the identical
 `New<Backend>Cache(cfg Config) (grcache.Cache, error)` signature. Unlike
-grnoti's/gourdiantoken's Postgres backend (which take an already-built
-`*pgxpool.Pool`, since those repos are meant to share a pool with the rest
-of a caller's application), grcache's `NewPostgresCache` always dials its
-own pool from a DSN and closes that same pool on `Close()` — consistent
-with every other grcache backend's own config-owns-everything shape, not
-with gourdiantoken's injection pattern.
+gourdiantoken's Postgres backend (which takes an already-built
+`*pgxpool.Pool`) and grnoti's (which accepts one through
+`PostgresConfig.Pool` as an alternative to a DSN), both meant to share a
+pool with the rest of a caller's application, grcache's `NewPostgresCache`
+always dials its own pool from a DSN and closes that same pool on
+`Close()` — consistent with every other grcache backend's own
+config-owns-everything shape, not with gourdiantoken's injection pattern.
+
+**Exception, since v0.6.0: `RedisConfig.Client`.** Redis is the one backend
+a service is likely to already hold a client for (grsentry, for one, keeps
+a go-redis client for its rate limiter), and a second pool to the same
+server is pure waste. So `RedisConfig` also takes an optional
+`Client redis.UniversalClient`. This follows grnoti's `PostgresConfig.Pool`
+exactly:
+
+- **Exactly one of `Addr` or `Client`.** Both or neither is an error.
+- **Used as given.** It is only `Ping`ed to validate it, and every
+  connection field (`Password`, `DB`, `PoolSize`, timeouts) is ignored.
+- **Never closed by grcache.** `redisCache.ownsClient` is true only for a
+  client dialed from `Addr`. `Close` closes only that one, and a failed
+  `Ping` on an injected client leaves it open.
+
+The uniform signature survives: injection is a config field, not a second
+constructor, so it is still `NewRedisCache(cfg RedisConfig)`. `*redis.ClusterClient`
+and `*redis.Ring` are refused at construction, although they satisfy
+`UniversalClient`. `Set`/`InvalidateTag` write a value key and its tag
+keys in one `MULTI`/`EXEC`. A cluster refuses that client-side once the keys
+hash to different slots (go-redis `ErrCrossSlot`), so every tagged write
+would fail. A ring splits the transaction per shard and quietly loses the
+atomicity. Failing at startup beats failing on the first tagged `Set`.
+Memcached, Postgres and Mongo still always own their clients.
 
 ### 3. Real local services in tests, not mocks — but different connection details than gourdiantoken
 
