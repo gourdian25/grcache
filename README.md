@@ -8,10 +8,8 @@ grcache is a generic, backend-agnostic caching abstraction for the gourdian
 ecosystem — the same architectural pattern
 [gourdiantoken](https://github.com/gourdian25/gourdiantoken) uses for token
 storage (`TokenRepository` interface → multiple backend implementations),
-applied instead to general-purpose caching. It is the shared caching layer
-that `grauth` (permission/session caching) and `graudit` (read-path caching)
-depend on, and that any service needing backend-agnostic caching can build on
-directly — `grnoti`, for example, wraps a `Cache` directly for idempotent
+applied instead to general-purpose caching. Any service needing
+backend-agnostic caching can build on it directly — `grnoti`, for example, wraps a `Cache` directly for idempotent
 event tracking, preference caching, and A/B experiment assignment (see below).
 
 ## 🌐 Part of the gourdian25 ecosystem
@@ -29,7 +27,7 @@ together:
 - [graudit](https://github.com/gourdian25/graudit) — an append-only audit
   log with pluggable storage backends, mirroring grcache's own layout.
 - [grpolicy](https://github.com/gourdian25/grpolicy) — attribute-based
-  policy evaluation (RBAC/ABAC), independent of any notion of "user" or
+  policy evaluation, independent of any notion of "user" or
   "role".
 - [grnoti](https://github.com/gourdian25/grnoti) — a push-notification
   service (FCM dispatch, idempotent event processing, device-token
@@ -449,8 +447,7 @@ grcache's tests run against real local services (no mocks, no
 `miniredis`/`testcontainers-go`), mirroring gourdiantoken's testing
 philosophy. Postgres, Redis and Mongo are the shared containers every
 gourdian25 repo tests against (each repo gets its own database/keyspace/DB-index),
-built from [grsentry](https://github.com/gourdian25/grsentry)'s
-`docker-compose.yml`. Memcached is grcache's own, since no other repo uses
+built from grsentry's `docker-compose.yml`. Memcached is grcache's own, since no other repo uses
 it. Start them with:
 
 ```sh
@@ -525,7 +522,7 @@ Explicitly deferred, not forgotten:
   not yet wired up here).
 - Cache-aside helper wrappers (e.g. `GetOrSet(ctx, key, loader)`), deferred
   to keep v1's surface area minimal until the core interface has been
-  proven in real usage inside `grauth`.
+  proven in real usage.
 
 ## 🚫 Out of Scope
 
