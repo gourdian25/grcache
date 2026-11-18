@@ -257,9 +257,10 @@ func NewRedisCache(cfg RedisConfig) (Cache, error) {
 func newRedisCacheFromClient(client goredis.UniversalClient, logger Logger) (Cache, error) {
 	switch client.(type) {
 	case *goredis.ClusterClient, *goredis.Ring:
-		// Set and InvalidateTag run one MULTI/EXEC over a value key and
-		// its tag keys: a cluster refuses that across hash slots, a ring
-		// splits it per shard. Refuse at startup, not on the first tagged Set.
+		// Set and InvalidateTag each run one Lua script over a value key
+		// and its tag keys: a cluster refuses that across hash slots, a
+		// ring splits it per shard. Refuse at startup, not on the first
+		// tagged Set.
 		return nil, fmt.Errorf("grcache/redis: RedisConfig.Client must be a single-node or failover client, not %T", client)
 	}
 

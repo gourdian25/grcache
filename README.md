@@ -157,7 +157,7 @@ grcache's other documented divergences from sibling conventions.
 | Backend    | Constructor          | Expiry mechanism            | Tag storage                                                              |
 |------------|----------------------|------------------------------|---------------------------------------------------------------------------|
 | In-memory  | `NewMemoryCache`      | Application sweep goroutine | In-process map                                                           |
-| Redis      | `NewRedisCache`       | Native (`EX`) + lazy backstop | Redis Sets, pipelined `SMEMBERS`+`DEL`                                   |
+| Redis      | `NewRedisCache`       | Native (`PX`) + lazy backstop | Redis Sets, expiring with their longest-lived value; one Lua script per `Set`/`InvalidateTag` |
 | Memcached  | `NewMemcachedCache`   | Native (`Expiration`)        | Serialized list — best-effort, eventually consistent (see below)         |
 | PostgreSQL | `NewPostgresCache`    | Application sweep goroutine | Join table (`grcache_entry_tags`), kept in sync every `Set`/`Delete`      |
 | MongoDB    | `NewMongoCache`       | Native TTL index (`expireAfterSeconds: 0`) | Embedded array field on the same document          |
