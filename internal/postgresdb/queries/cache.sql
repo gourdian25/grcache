@@ -20,11 +20,18 @@ DELETE FROM grcache_entries WHERE key = $1;
 -- name: CountLiveEntry :one
 SELECT COUNT(*) FROM grcache_entries WHERE key = $1 AND (expires_at IS NULL OR expires_at > now());
 
--- name: DeleteEntriesByTag :execrows
-DELETE FROM grcache_entries WHERE key IN (SELECT key FROM grcache_entry_tags WHERE tag = $1);
-
--- name: DeleteEntryTagsByTag :exec
-DELETE FROM grcache_entry_tags WHERE tag = $1;
+-- name: InvalidateTag :one
+-- One statement, so both deletes see one snapshot: a Set that commits while
+-- it runs keeps its entry and its tag row together, where two statements
+-- deleted the tag row of an entry the first one never saw.
+WITH tagged AS (
+    SELECT et.key FROM grcache_entry_tags et WHERE et.tag = @tag::text
+), deleted_entries AS (
+    DELETE FROM grcache_entries e WHERE e.key IN (SELECT t.key FROM tagged t) RETURNING e.key
+), deleted_tags AS (
+    DELETE FROM grcache_entry_tags dt WHERE dt.tag = @tag::text
+)
+SELECT count(*) FROM deleted_entries;
 
 -- name: CountAllEntries :one
 SELECT COUNT(*) FROM grcache_entries;

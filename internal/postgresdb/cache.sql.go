@@ -46,18 +46,6 @@ func (q *Queries) DeleteEntriesByKeys(ctx context.Context, dollar_1 []string) (i
 	return result.RowsAffected(), nil
 }
 
-const deleteEntriesByTag = `-- name: DeleteEntriesByTag :execrows
-DELETE FROM grcache_entries WHERE key IN (SELECT key FROM grcache_entry_tags WHERE tag = $1)
-`
-
-func (q *Queries) DeleteEntriesByTag(ctx context.Context, tag string) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteEntriesByTag, tag)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const deleteEntry = `-- name: DeleteEntry :execrows
 DELETE FROM grcache_entries WHERE key = $1
 `
@@ -85,15 +73,6 @@ DELETE FROM grcache_entry_tags WHERE key = ANY($1::text[])
 
 func (q *Queries) DeleteEntryTagsByKeys(ctx context.Context, dollar_1 []string) error {
 	_, err := q.db.Exec(ctx, deleteEntryTagsByKeys, dollar_1)
-	return err
-}
-
-const deleteEntryTagsByTag = `-- name: DeleteEntryTagsByTag :exec
-DELETE FROM grcache_entry_tags WHERE tag = $1
-`
-
-func (q *Queries) DeleteEntryTagsByTag(ctx context.Context, tag string) error {
-	_, err := q.db.Exec(ctx, deleteEntryTagsByTag, tag)
 	return err
 }
 
@@ -125,6 +104,27 @@ type InsertEntryTagParams struct {
 func (q *Queries) InsertEntryTag(ctx context.Context, arg InsertEntryTagParams) error {
 	_, err := q.db.Exec(ctx, insertEntryTag, arg.Key, arg.Tag)
 	return err
+}
+
+const invalidateTag = `-- name: InvalidateTag :one
+WITH tagged AS (
+    SELECT et.key FROM grcache_entry_tags et WHERE et.tag = $1::text
+), deleted_entries AS (
+    DELETE FROM grcache_entries e WHERE e.key IN (SELECT t.key FROM tagged t) RETURNING e.key
+), deleted_tags AS (
+    DELETE FROM grcache_entry_tags dt WHERE dt.tag = $1::text
+)
+SELECT count(*) FROM deleted_entries
+`
+
+// One statement, so both deletes see one snapshot: a Set that commits while
+// it runs keeps its entry and its tag row together, where two statements
+// deleted the tag row of an entry the first one never saw.
+func (q *Queries) InvalidateTag(ctx context.Context, tag string) (int64, error) {
+	row := q.db.QueryRow(ctx, invalidateTag, tag)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const listExpiredKeys = `-- name: ListExpiredKeys :many

@@ -198,10 +198,15 @@ cache, err := grcache.NewRedisCache(grcache.RedisConfig{
 
 Built directly on gourdiantoken's proven Redis conventions: the same
 `Ping`-on-construct validation and error-wrapping style. Tags are Redis
-Sets; `InvalidateTag` pipelines `SMEMBERS` + `DEL` in one round trip. No
-Lua/`EVAL` — gourdiantoken's own docs claim Lua scripting but its actual
-code only ever uses `Pipeline`/`SETNX`, so grcache matches gourdiantoken's
-*real* behavior, not its documentation.
+Sets. `Set` and `InvalidateTag` each run as one Lua script, which Redis
+executes with nothing in between, so a `Set` can't land between
+`InvalidateTag` reading a tag's members and deleting them (before v0.7.0 it
+could, and kept its value while losing its tag; see CHANGELOG.md). A tag
+set lives as long as its longest-lived value: a tag of values that all
+expire expires too, and a value with no TTL keeps its tag. `InvalidateTag`
+returns how many values it actually deleted, so a member whose value had
+already expired isn't counted. A very large tag deletes all its values in
+one script, during which Redis serves nothing else.
 
 #### Sharing an existing client
 
@@ -229,10 +234,9 @@ cache, err := grcache.NewRedisCache(grcache.RedisConfig{
   built from `Addr` still closes the client it dialed itself, as before.
 - **Single-node or Sentinel only.** Any `redis.UniversalClient` type-checks,
   but `NewRedisCache` refuses a `*redis.ClusterClient` or `*redis.Ring`.
-  `Set` and `InvalidateTag` write a value key and its tag keys in one
-  `MULTI`/`EXEC`. A cluster rejects that when the keys hash to different
-  slots (go-redis `ErrCrossSlot`), and a ring splits it across shards,
-  which loses the atomicity. A `*redis.Client`, including a Sentinel
+  `Set` and `InvalidateTag` touch a value key and its tag keys in one Lua
+  script. A cluster rejects that when the keys hash to different slots,
+  and a ring splits it across shards, which loses the atomicity. A `*redis.Client`, including a Sentinel
   failover client and what `redis.NewUniversalClient` returns for a single
   address or a `MasterName`, is fine.
 
@@ -324,9 +328,10 @@ Per-backend notes on top of that baseline guarantee:
 - **In-memory** — a single `sync.RWMutex` guards both the value map and the
   tag index together, so there is no race window where a reader could see
   an updated value paired with a stale tag index, or vice versa.
-- **Redis** — `Set` and `InvalidateTag` use a transactional pipeline
-  (`TxPipeline`, real `MULTI`/`EXEC`) so a value write and its tag-set
-  memberships apply atomically as a unit, even under concurrent callers.
+- **Redis** — `Set` and `InvalidateTag` each run as one Lua script, so a
+  value write and its tag memberships apply as a unit, and a concurrent
+  `Set` lands wholly before or wholly after an `InvalidateTag`, never
+  between its read and its deletes.
 - **Memcached** — per-key `Get`/`Set`/`Delete`/`Exists` are safe under
   concurrency, but tag *membership* is best-effort/eventually consistent:
   concurrent `Set` calls tagging the same tag can race and drop a member
@@ -335,8 +340,9 @@ Per-backend notes on top of that baseline guarantee:
   [Memcached](#memcached) above for the full tradeoff.
 - **PostgreSQL** — schema must already exist before constructing a `Cache`
   (see [PostgreSQL](#postgresql) above) — `NewPostgresCache` itself only
-  pings the pool, it never creates tables. Per-key reads/writes use
-  standard transactional statements.
+  pings the pool, it never creates tables. `Set` writes the entry and its
+  tags in one transaction; `InvalidateTag` deletes entries and tag rows in
+  one statement, so a `Set` committing meanwhile keeps its tag row.
 - **MongoDB** — value, tags, and expiry are written together in one
   `ReplaceOne` per `Set`, so a concurrent reader never observes a
   partially-applied update.
@@ -438,8 +444,9 @@ Dragonfly and Valkey are Redis-protocol compatible — point the Redis
 backend's `RedisConfig.Addr` at your Dragonfly/Valkey instance (or pass a
 `RedisConfig.Client` already connected to it); no separate backend is
 needed. Verify compatibility against the specific commands
-grcache issues (`GET`, `SET EX`, `DEL`, `EXISTS`, `SADD`, `SMEMBERS`,
-pipelining) rather than assuming blanket compatibility.
+grcache issues (`GET`, `DEL`, `EXISTS`, `INFO`, and Lua scripts through
+`EVALSHA`/`EVAL` calling `SET PX`, `SADD`, `PTTL`, `PEXPIRE`, `PERSIST`,
+`SMEMBERS`, `DEL`) rather than assuming blanket compatibility.
 
 ## 🧪 Testing
 
@@ -472,7 +479,7 @@ different from gourdiantoken's own test settings (DB 15, `gourdiantoken_test`,
 and its own Mongo database) so both suites can run against the same shared
 instances without colliding.
 
-The root package maintains 96.7% test coverage, enforced by a 95% gate:
+The root package maintains 96.3% test coverage, enforced by a 95% gate:
 
 ```sh
 make coverage-check
@@ -486,28 +493,30 @@ make bench
 
 `InvalidateTag` is benchmarked at 10/1k/100k-key tag cardinality per
 backend, since it's the operation most likely to have a hidden performance
-cliff. Indicative numbers from this repo's own dev machine (Apple M4; run
+cliff. Indicative numbers for v0.7.0 from this repo's own dev machine (Apple
+M4, go1.27.3, `-benchtime=3s`, each backend in a local container; run
 `make bench` for current numbers on your hardware):
 
 | Backend | 10 keys | 1,000 keys | 100,000 keys |
 |---|---|---|---|
-| memory | ~9µs | ~133µs | ~9.2ms |
-| Redis | ~3.2ms | ~3.1ms | ~68ms |
-| PostgreSQL | ~26ms | ~26ms | ~93ms |
-| MongoDB | ~7.6ms | ~11ms | ~404ms |
-| memcached | ~4.1ms (10) | ~92ms (1,000, capped) | *not run — see below* |
+| memory | ~0.7µs | ~55µs | ~11ms |
+| Redis | ~0.11ms | ~0.92ms | ~128ms |
+| PostgreSQL | ~0.41ms | ~3.7ms | ~129ms |
+| MongoDB | ~0.83ms | ~5.9ms | ~507ms |
+| memcached | ~1.3ms (10) | ~105ms (1,000, capped) | *not run — see below* |
 
-Redis's numbers above are post-`v0.1.1`'s `TxPipeline` fix (see CHANGELOG.md)
-— `MULTI`/`EXEC` overhead versus the previous non-transactional `Pipeline`
-turned out to be within measurement noise (a few percent, not a step
-change), since go-redis still sends the whole batch in one round trip
-either way.
+Since v0.7.0 Redis's `InvalidateTag` is one Lua script and PostgreSQL's one
+statement (see CHANGELOG.md). Measured the same way, v0.6.1's two-step
+versions were no faster: Redis took ~0.75ms / ~1.5ms / ~137ms and
+PostgreSQL ~0.64ms / ~88ms / ~128ms. The script issues one `DEL` per member
+inside Redis rather than one batched `DEL` over the wire, which costs
+nothing measurable here, since the round trips it removes dominate.
 
 memcached's benchmark deliberately caps at 1,000 keys, not 100,000: its
 list-based tag emulation does a read-modify-write of the *entire* member
 list on every tagged `Set`, so populating a single tag with *n* keys costs
-O(n²) total data movement. The 10→100→1,000 progression above (4ms → 12.6ms
-→ 92ms) already demonstrates the scaling cliff clearly — a full 100,000-key
+O(n²) total data movement. The 10→100→1,000 progression (1.3ms → 10.9ms
+→ 105ms) already demonstrates the scaling cliff clearly — a full 100,000-key
 run would be impractically slow to include in a routine `make bench`, which
 is itself the direct, expected consequence of the documented
 eventual-consistency tradeoff, not a gap in the measurement.

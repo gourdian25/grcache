@@ -411,16 +411,7 @@ func (c *postgresCache) InvalidateTag(ctx context.Context, tag string) (int, err
 		return 0, ErrClosed
 	}
 
-	var n int64
-	err := pgx.BeginFunc(ctx, c.pool, func(tx pgx.Tx) error {
-		q := c.q.WithTx(tx)
-		var err error
-		n, err = q.DeleteEntriesByTag(ctx, tag)
-		if err != nil {
-			return err
-		}
-		return q.DeleteEntryTagsByTag(ctx, tag)
-	})
+	n, err := c.q.InvalidateTag(ctx, tag)
 	if err != nil {
 		return 0, fmt.Errorf("grcache/postgres: invalidate tag %q: %w", tag, ErrCacheUnavailable)
 	}
