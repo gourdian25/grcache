@@ -5,6 +5,57 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-11-18
+
+Fixes a race in tag invalidation on the Redis and Postgres backends, and
+tag sets on Redis that never expired. Both were proven by a test before the
+fix. Redis needs Lua scripting (any Redis since 2.6; Valkey and Dragonfly
+support it too). The `Cache` interface is unchanged.
+
+### Fixed
+
+- **Redis: a `Set` concurrent with `InvalidateTag` could escape every later
+  invalidation.** `InvalidateTag` read the tag's members (`SMEMBERS`) in one
+  round trip and deleted them, with the tag set, in a `MULTI`/`EXEC` in a
+  second. A `Set` landing between the two kept its value while the tag set
+  holding its membership was deleted, so no later `InvalidateTag` for that
+  tag removed it: it stayed until its TTL ran out, and with no TTL, for
+  good. v0.1.1's `TxPipeline` made each batch atomic, but `MULTI`/`EXEC`
+  can't read inside the transaction, so the read stayed outside it. `Set`
+  and `InvalidateTag` now each run as one Lua script, which Redis executes
+  with no other command in between.
+- **Postgres: the same race.** `InvalidateTag` was two `DELETE`s in one
+  READ COMMITTED transaction, each with its own snapshot: a `Set`
+  committing between them kept its entry and lost its tag row. It is now
+  one statement (the `InvalidateTag` query), so both deletes see one
+  snapshot.
+- **Redis: tag sets never expired.** Values expired but their tag sets
+  stayed, so every tag ever used kept a key in Redis. `Set` now keeps each
+  tag set alive exactly as long as its longest-lived value: a new tag takes
+  the value's TTL, a longer TTL extends it, a shorter one never shortens it,
+  and a value with no TTL makes the tag persistent.
+
+### Changed
+
+- Redis `InvalidateTag` returns the number of values it actually deleted,
+  as the memory backend already did. Before, it returned the tag set's
+  size, which counted members whose values had already expired or been
+  deleted.
+- Redis: a very large tag is now invalidated inside one script, during
+  which Redis serves no other command. Before, the deletes ran in one
+  `MULTI`/`EXEC`, which also ran alone, so only the `SMEMBERS` read moved
+  inside.
+
+### Testing
+
+- `TestRedisInvalidateTag_ConcurrentSetStaysTagged` holds `InvalidateTag`
+  after its first command and lands a `Set` there;
+  `TestPostgresInvalidateTag_ConcurrentSetStaysTagged` does the same by
+  holding a row lock `InvalidateTag` waits on. Both fail on v0.6.1.
+- `TestRedisTagExpiry` (a tag's TTL grows, never shrinks, is persistent for
+  a value with no TTL, and lapses with its last value) and
+  `TestRedisInvalidateTag_CountsOnlyLiveValues`.
+
 ## [0.6.1] - 2026-11-08
 
 ### Changed

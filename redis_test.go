@@ -246,3 +246,149 @@ func TestKeyPrefixCollisionSafety(t *testing.T) {
 		t.Fatalf("Get = %q, want %q", got, "v")
 	}
 }
+
+// pauseAfterFirstCommand holds the first command it sees, once its reply is
+// back, until release is closed: the moment between one round trip and the
+// next, where a concurrent writer can get in.
+type pauseAfterFirstCommand struct {
+	reached chan struct{}
+	release chan struct{}
+	once    bool
+}
+
+func (h *pauseAfterFirstCommand) DialHook(next goredis.DialHook) goredis.DialHook { return next }
+
+func (h *pauseAfterFirstCommand) ProcessPipelineHook(next goredis.ProcessPipelineHook) goredis.ProcessPipelineHook {
+	return next
+}
+
+func (h *pauseAfterFirstCommand) ProcessHook(next goredis.ProcessHook) goredis.ProcessHook {
+	return func(ctx context.Context, cmd goredis.Cmder) error {
+		err := next(ctx, cmd)
+		if !h.once {
+			h.once = true
+			close(h.reached)
+			<-h.release
+		}
+		return err
+	}
+}
+
+// TestRedisInvalidateTag_ConcurrentSetStaysTagged: a Set that lands while
+// InvalidateTag is in flight must stay reachable by its tag. Before v0.7.0
+// InvalidateTag read the tag's members and deleted them in a second round
+// trip, so a Set between the two kept its value while its tag membership was
+// deleted, and no later InvalidateTag removed it.
+func TestRedisInvalidateTag_ConcurrentSetStaysTagged(t *testing.T) {
+	ctx := context.Background()
+	writer := newRedisCacheForTest(t)
+
+	paused := newInjectedRedisClient(t)
+	hook := &pauseAfterFirstCommand{reached: make(chan struct{}), release: make(chan struct{})}
+	paused.AddHook(hook)
+	hook.once = true // NewRedisCache's Ping passes through
+	invalidator, err := grcache.NewRedisCache(grcache.RedisConfig{Client: paused})
+	if err != nil {
+		t.Fatalf("NewRedisCache: %v", err)
+	}
+	hook.once = false
+
+	if err := writer.Set(ctx, "before", []byte("v"), time.Minute, "role"); err != nil {
+		t.Fatalf("Set(before): %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := invalidator.InvalidateTag(ctx, "role"); done <- err }()
+	<-hook.reached
+	if err := writer.Set(ctx, "during", []byte("v"), 0, "role"); err != nil {
+		t.Fatalf("Set(during): %v", err)
+	}
+	close(hook.release)
+	if err := <-done; err != nil {
+		t.Fatalf("InvalidateTag: %v", err)
+	}
+
+	if _, err := writer.InvalidateTag(ctx, "role"); err != nil {
+		t.Fatalf("InvalidateTag (second): %v", err)
+	}
+	if _, err := writer.Get(ctx, "during"); !errors.Is(err, grcache.ErrKeyNotFound) {
+		t.Fatalf("Get(during) after two InvalidateTag(role) = %v, want ErrKeyNotFound: its tag membership was lost", err)
+	}
+}
+
+// TestRedisTagExpiry: a tag set lives as long as its longest-lived value and
+// no longer; a value with no TTL makes its tag persistent.
+func TestRedisTagExpiry(t *testing.T) {
+	ctx := context.Background()
+	cache := newRedisCacheForTest(t)
+	client := newInjectedRedisClient(t)
+	ttlOf := func(tag string) time.Duration {
+		t.Helper()
+		d, err := client.PTTL(ctx, "grcache:tag:"+tag).Result()
+		if err != nil {
+			t.Fatalf("PTTL(%s): %v", tag, err)
+		}
+		return d
+	}
+
+	if err := cache.Set(ctx, "a", []byte("v"), time.Minute, "t"); err != nil {
+		t.Fatalf("Set(a): %v", err)
+	}
+	if d := ttlOf("t"); d <= 0 || d > time.Minute {
+		t.Fatalf("tag TTL after a 1m value = %v, want (0, 1m]", d)
+	}
+	if err := cache.Set(ctx, "b", []byte("v"), time.Hour, "t"); err != nil {
+		t.Fatalf("Set(b): %v", err)
+	}
+	if d := ttlOf("t"); d <= time.Minute {
+		t.Fatalf("tag TTL after a 1h value = %v, want it extended past 1m", d)
+	}
+	if err := cache.Set(ctx, "c", []byte("v"), time.Second, "t"); err != nil {
+		t.Fatalf("Set(c): %v", err)
+	}
+	if d := ttlOf("t"); d <= time.Minute {
+		t.Fatalf("tag TTL after a shorter value = %v, want it never shortened", d)
+	}
+	if err := cache.Set(ctx, "d", []byte("v"), 0, "t"); err != nil {
+		t.Fatalf("Set(d): %v", err)
+	}
+	if d := ttlOf("t"); d != -1 {
+		t.Fatalf("tag TTL after a value with no TTL = %v, want -1 (persistent)", d)
+	}
+	if err := cache.Set(ctx, "e", []byte("v"), time.Second, "t"); err != nil {
+		t.Fatalf("Set(e): %v", err)
+	}
+	if d := ttlOf("t"); d != -1 {
+		t.Fatalf("persistent tag TTL after a timed value = %v, want it to stay -1", d)
+	}
+
+	if err := cache.Set(ctx, "short", []byte("v"), 50*time.Millisecond, "brief"); err != nil {
+		t.Fatalf("Set(short): %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n, err := client.Exists(ctx, "grcache:tag:brief").Result(); err != nil || n != 0 {
+		t.Fatalf("tag of an expired value: exists=%d err=%v, want gone", n, err)
+	}
+}
+
+// TestRedisInvalidateTag_CountsOnlyLiveValues: a member whose value has
+// already gone isn't counted.
+func TestRedisInvalidateTag_CountsOnlyLiveValues(t *testing.T) {
+	ctx := context.Background()
+	cache := newRedisCacheForTest(t)
+	if err := cache.Set(ctx, "live", []byte("v"), time.Minute, "t"); err != nil {
+		t.Fatalf("Set(live): %v", err)
+	}
+	if err := cache.Set(ctx, "gone", []byte("v"), time.Minute, "t"); err != nil {
+		t.Fatalf("Set(gone): %v", err)
+	}
+	if err := cache.Delete(ctx, "gone"); err != nil {
+		t.Fatalf("Delete(gone): %v", err)
+	}
+	n, err := cache.InvalidateTag(ctx, "t")
+	if err != nil {
+		t.Fatalf("InvalidateTag: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("InvalidateTag = %d, want 1 (the deleted value isn't counted)", n)
+	}
+}

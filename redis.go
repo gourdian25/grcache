@@ -1,15 +1,26 @@
 // File: redis.go
 
 // The Redis backend (redisCache) is grcache's primary production backend,
-// built directly on gourdiantoken's proven Redis handling conventions: the
-// same Ping-on-construct validation, the same error-wrapping style, and a
-// transactional pipeline (TxPipeline, i.e. MULTI/EXEC — not Lua/EVAL, which
-// gourdiantoken's own docs claim but its code never actually uses) for
-// atomic multi-key operations. TxPipeline, not the plain non-transactional
-// Pipeline, is required here: a connection failure mid-batch on a plain
-// Pipeline can leave a value written without all its tag memberships
-// applied (or vice versa in InvalidateTag) — MULTI/EXEC is what actually
-// makes "atomic multi-key operations" true rather than aspirational.
+// built on gourdiantoken's Redis handling conventions: the same
+// Ping-on-construct validation and the same error-wrapping style.
+//
+// Set and InvalidateTag each run as one Lua script (redisSetScript,
+// redisInvalidateTagScript), which Redis executes atomically: no other
+// command runs between a script's first command and its last. v0.1.1 moved
+// them from a plain Pipeline to MULTI/EXEC so a dropped connection couldn't
+// leave a value without its tags; that made each batch atomic, but
+// InvalidateTag still read the tag's members (SMEMBERS) in one round trip
+// and deleted them in another, and a Set landing between the two kept its
+// value while its tag membership was deleted, so no later InvalidateTag
+// reached it (v0.7.0 fixes it). Inside one script the read and the deletes
+// can't be split.
+//
+// A tag set lives at least as long as the longest-lived value in it: Set
+// extends a tag's expiry to its value's TTL when that is later, and makes
+// the tag persistent for a value with no TTL. Before v0.7.0 tag sets never
+// expired, so every tag ever used stayed in Redis. A member whose value has
+// expired or been deleted stays in its tag set until the tag expires or is
+// invalidated; InvalidateTag counts only the values it actually deleted.
 //
 // By default this backend owns its client: NewRedisCache dials one from
 // RedisConfig's Addr/Password/DB/pool fields and closes it on Close —
@@ -18,10 +29,10 @@
 // holds a go-redis client (one pool shared with the rest of its backend,
 // the way grnoti's PostgresConfig.Pool shares a pgxpool.Pool) can pass it
 // as RedisConfig.Client instead: grcache uses it as given and never closes
-// it. A *redis.ClusterClient or *redis.Ring is refused: the transactional
-// pipeline above spans a value key and its tag keys, which a cluster
-// refuses across hash slots (go-redis ErrCrossSlot) and a ring splits
-// across shards, losing the atomicity this backend exists to provide.
+// it. A *redis.ClusterClient or *redis.Ring is refused: both scripts touch a
+// value key and its tag keys together, which a cluster refuses across hash
+// slots and a ring splits across shards, losing the atomicity this backend
+// exists to provide.
 package grcache
 
 import (
@@ -44,6 +55,46 @@ const (
 	defaultWriteTimeout = 3 * time.Second
 	pingTimeout         = 5 * time.Second // matches gourdiantoken's Ping-on-construct timeout
 )
+
+// redisSetScript writes a value and adds it to each of its tags, atomically.
+// KEYS[1] is the value key and KEYS[2..] its tag keys; ARGV[1] is the value,
+// ARGV[2] its TTL in milliseconds (0: none) and ARGV[3] the caller's key,
+// the member stored in each tag set. A tag's expiry only ever grows: a new
+// tag takes the value's TTL, a value with no TTL makes its tag persistent,
+// and a persistent tag stays persistent.
+var redisSetScript = goredis.NewScript(`
+local ttl = tonumber(ARGV[2])
+if ttl > 0 then
+  redis.call('SET', KEYS[1], ARGV[1], 'PX', ttl)
+else
+  redis.call('SET', KEYS[1], ARGV[1])
+end
+for i = 2, #KEYS do
+  local current = redis.call('PTTL', KEYS[i])
+  redis.call('SADD', KEYS[i], ARGV[3])
+  if ttl == 0 then
+    redis.call('PERSIST', KEYS[i])
+  elseif current == -2 or (current >= 0 and current < ttl) then
+    redis.call('PEXPIRE', KEYS[i], ttl)
+  end
+end
+return 1
+`)
+
+// redisInvalidateTagScript deletes every value in a tag and the tag itself,
+// atomically, and returns how many values it deleted (a member whose value
+// already expired or was deleted isn't counted). KEYS[1] is the tag key;
+// ARGV[1] is the value key prefix. The value keys are built inside the
+// script, so a tag's size isn't limited by how many keys one call can carry.
+var redisInvalidateTagScript = goredis.NewScript(`
+local members = redis.call('SMEMBERS', KEYS[1])
+local deleted = 0
+for _, member in ipairs(members) do
+  deleted = deleted + redis.call('DEL', ARGV[1] .. member)
+end
+redis.call('DEL', KEYS[1])
+return deleted
+`)
 
 // RedisConfig configures a Cache constructed by NewRedisCache. Exactly one
 // of Addr or Client must be set: with Addr, grcache dials (and owns) its
@@ -251,15 +302,24 @@ func (c *redisCache) Set(ctx context.Context, key string, val []byte, ttl time.D
 		return ErrInvalidTTL
 	}
 
-	pipe := c.client.TxPipeline()
-	pipe.Set(ctx, valueKey(key), val, ttl)
+	keys := make([]string, 0, len(tags)+1)
+	keys = append(keys, valueKey(key))
 	for _, tag := range tags {
-		pipe.SAdd(ctx, tagKey(tag), key)
+		keys = append(keys, tagKey(tag))
 	}
-	if _, err := pipe.Exec(ctx); err != nil {
+	if err := redisSetScript.Run(ctx, c.client, keys, val, ttlMilliseconds(ttl), key).Err(); err != nil {
 		return fmt.Errorf("grcache/redis: set %q: %w", key, ErrCacheUnavailable)
 	}
 	return nil
+}
+
+// ttlMilliseconds is ttl in whole milliseconds, rounded up so a positive TTL
+// never becomes 0 (no expiry); 0 stays 0.
+func ttlMilliseconds(ttl time.Duration) int64 {
+	if ttl <= 0 {
+		return 0
+	}
+	return int64((ttl + time.Millisecond - 1) / time.Millisecond)
 }
 
 func (c *redisCache) Delete(ctx context.Context, key string) error {
@@ -290,24 +350,11 @@ func (c *redisCache) InvalidateTag(ctx context.Context, tag string) (int, error)
 		return 0, ErrClosed
 	}
 
-	members, err := c.client.SMembers(ctx, tagKey(tag)).Result()
+	n, err := redisInvalidateTagScript.Run(ctx, c.client, []string{tagKey(tag)}, valuePrefix).Int()
 	if err != nil {
 		return 0, fmt.Errorf("grcache/redis: invalidate tag %q: %w", tag, ErrCacheUnavailable)
 	}
-	if len(members) == 0 {
-		return 0, nil
-	}
-
-	pipe := c.client.TxPipeline()
-	for _, member := range members {
-		pipe.Del(ctx, valueKey(member))
-	}
-	pipe.Del(ctx, tagKey(tag))
-	if _, err := pipe.Exec(ctx); err != nil {
-		return 0, fmt.Errorf("grcache/redis: invalidate tag %q: %w", tag, ErrCacheUnavailable)
-	}
-
-	return len(members), nil
+	return n, nil
 }
 
 func (c *redisCache) Stats(ctx context.Context) (Stats, error) {

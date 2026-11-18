@@ -73,7 +73,9 @@
 //     cache, err := grcache.NewMemoryCache(grcache.WithSweepInterval(30 * time.Second))
 //
 //  2. Redis (NewRedisCache) — primary production backend. Tags are stored as
-//     Redis Sets; InvalidateTag pipelines SMEMBERS + DEL. Either dials its
+//     Redis Sets that expire with their longest-lived value; Set and
+//     InvalidateTag each run as one Lua script, so a concurrent Set can't
+//     slip between InvalidateTag's read and its deletes. Either dials its
 //     own client from Addr, or shares one the caller already holds via
 //     RedisConfig.Client (single-node or Sentinel only), which grcache then
 //     never closes.

@@ -9,6 +9,7 @@ package grcache_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -232,5 +233,64 @@ func TestTransactionRollbackOnPartialFailure(t *testing.T) {
 
 	if _, err := cache.Get(ctx, "txn-key"); err == nil {
 		t.Fatal("Get after InvalidateTag = nil error, want ErrKeyNotFound")
+	}
+}
+
+// TestPostgresInvalidateTag_ConcurrentSetStaysTagged: a Set that commits
+// while InvalidateTag runs must keep its tag row. Before v0.7.0
+// InvalidateTag was two statements, and a Set committing between them kept
+// its entry while the second statement deleted its tag row. The test holds a
+// row lock InvalidateTag needs, commits a Set while it waits, then lets it go.
+func TestPostgresInvalidateTag_ConcurrentSetStaysTagged(t *testing.T) {
+	ctx := context.Background()
+	cache := newPostgresCacheForTest(t)
+	if err := cache.Set(ctx, "before", []byte("v"), time.Minute, "role"); err != nil {
+		t.Fatalf("Set(before): %v", err)
+	}
+
+	pool, err := pgxpool.New(ctx, postgresTestDSN)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+	locker, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer func() { _ = locker.Rollback(ctx) }()
+	if _, err := locker.Exec(ctx, "SELECT 1 FROM grcache_entries WHERE key = 'before' FOR UPDATE"); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { _, err := cache.InvalidateTag(ctx, "role"); done <- err }()
+	waiting := false
+	for i := 0; i < 250 && !waiting; i++ {
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND query LIKE '%grcache_entries%' AND pid <> pg_backend_pid()`).Scan(&n); err != nil {
+			t.Fatalf("pg_stat_activity: %v", err)
+		}
+		waiting = n > 0
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !waiting {
+		t.Fatal("InvalidateTag never waited on the row lock")
+	}
+	if err := cache.Set(ctx, "during", []byte("v"), 0, "role"); err != nil {
+		t.Fatalf("Set(during): %v", err)
+	}
+	if err := locker.Commit(ctx); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("InvalidateTag: %v", err)
+	}
+
+	if _, err := cache.InvalidateTag(ctx, "role"); err != nil {
+		t.Fatalf("InvalidateTag (second): %v", err)
+	}
+	if _, err := cache.Get(ctx, "during"); !errors.Is(err, grcache.ErrKeyNotFound) {
+		t.Fatalf("Get(during) after two InvalidateTag(role) = %v, want ErrKeyNotFound: its tag row was lost", err)
 	}
 }

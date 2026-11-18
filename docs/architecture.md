@@ -70,11 +70,10 @@ exactly:
 The uniform signature survives: injection is a config field, not a second
 constructor, so it is still `NewRedisCache(cfg RedisConfig)`. `*redis.ClusterClient`
 and `*redis.Ring` are refused at construction, although they satisfy
-`UniversalClient`. `Set`/`InvalidateTag` write a value key and its tag
-keys in one `MULTI`/`EXEC`. A cluster refuses that client-side once the keys
-hash to different slots (go-redis `ErrCrossSlot`), so every tagged write
-would fail. A ring splits the transaction per shard and quietly loses the
-atomicity. Failing at startup beats failing on the first tagged `Set`.
+`UniversalClient`. `Set`/`InvalidateTag` touch a value key and its tag
+keys in one Lua script. A cluster refuses that once the keys hash to
+different slots, so every tagged write would fail. A ring splits it per
+shard and quietly loses the atomicity. Failing at startup beats failing on the first tagged `Set`.
 Memcached, Postgres and Mongo still always own their clients.
 
 ### 3. Real local services in tests, not mocks — but different connection details than gourdiantoken
@@ -214,14 +213,21 @@ it is never a dependency of any backend's non-test code.
   place grcache does not copy gourdiantoken's `ErrX = thirdparty.ErrY`
   re-export pattern: leaking a backend-native error through `Cache` would
   break the backend-agnostic contract the interface exists to provide.
-- **Redis: TxPipeline, not Lua/`EVAL`**: gourdiantoken's doc comments claim
-  Lua scripting for atomic operations, but no real usage exists in its
-  codebase (confirmed by inspection via grep) — its actual mechanism for
-  these operations is `Pipeline`/`SETNX` (batched calls), not Lua
-  scripting. grcache's Redis `Set`/`InvalidateTag` use go-redis's
-  `TxPipeline` (real `MULTI`/`EXEC`), not the plain non-transactional
-  `Pipeline` — a v0.1.0 bug used plain `Pipeline` here despite the package
-  doc already claiming atomicity; see CHANGELOG.md's `[0.1.1]` entry.
+- **Redis: one Lua script per operation (since v0.7.0)**: v0.1.0 used a
+  plain `Pipeline` despite the package doc claiming atomicity; v0.1.1 moved
+  to `TxPipeline` (`MULTI`/`EXEC`), which made each batch atomic but left
+  `InvalidateTag` in two round trips: `SMEMBERS`, then the deletes. A `Set`
+  between them kept its value and lost its tag membership, so no later
+  `InvalidateTag` removed it. `MULTI`/`EXEC` can't read inside the
+  transaction, so the read and the deletes moved into one script
+  (`redisInvalidateTagScript`), and `Set` into another
+  (`redisSetScript`), which also keeps each tag set alive exactly as long
+  as its longest-lived value (tag sets never expired before). `WATCH` and a
+  retry would also close the race, but a busy tag could retry without
+  bound. The cost: a script runs alone, so invalidating a very large tag
+  holds Redis for its duration. Postgres had the same two-step shape
+  (two DELETEs at READ COMMITTED) and now runs one statement. See
+  CHANGELOG.md's `[0.7.0]` entry.
 - **Mongo TTL index**: reuses gourdiantoken's confirmed
   `expireAfterSeconds` TTL-index convention — the one backend besides
   Redis where expiry is the database's job, not grcache's. Documents with
